@@ -70,24 +70,26 @@ export default function TrackCard({
             {track.album.name}
           </p>
 
-          {showFeatures && track.audioFeatures && (
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <div>
-                <span className="font-semibold">BPM:</span>{" "}
-                {Math.round(track.audioFeatures.tempo)}
-              </div>
-              <div>
-                <span className="font-semibold">Key:</span>{" "}
-                {keyNames[track.audioFeatures.key]}{" "}
-                {track.audioFeatures.mode === 1 ? "Major" : "Minor"}
-              </div>
-              <div>
-                <span className="font-semibold">Energy:</span>{" "}
-                {Math.round(track.audioFeatures.energy * 100)}%
-              </div>
-              <div>
-                <span className="font-semibold">Dance:</span>{" "}
-                {Math.round(track.audioFeatures.danceability * 100)}%
+          {showFeatures && track.audioFeatures && track.audioFeatures.tempo && (
+            <div className="mt-2">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="font-semibold">BPM:</span>{" "}
+                  {Math.round(track.audioFeatures.tempo)}
+                </div>
+                <div>
+                  <span className="font-semibold">Key:</span>{" "}
+                  {keyNames[track.audioFeatures.key] || "Unknown"}{" "}
+                  {track.audioFeatures.mode === 1 ? "Major" : "Minor"}
+                </div>
+                <div>
+                  <span className="font-semibold">Energy:</span>{" "}
+                  {Math.round(track.audioFeatures.energy * 100)}%
+                </div>
+                <div>
+                  <span className="font-semibold">Dance:</span>{" "}
+                  {Math.round(track.audioFeatures.danceability * 100)}%
+                </div>
               </div>
             </div>
           )}

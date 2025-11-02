@@ -3,6 +3,7 @@
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useState, useEffect } from "react";
 import TrackCard from "@/components/TrackCard";
+import MashupCreator from "@/components/MashupCreator";
 
 interface Track {
   id: string;
@@ -41,14 +42,36 @@ export default function Home() {
   };
 
   const selectTrack = async (track: Track, slot: 1 | 2) => {
-    // Fetch audio features
+    setLoading(true);
     try {
       const response = await fetch(
         `/api/spotify/audio-features?id=${track.id}`
       );
-      const audioFeatures = await response.json();
-      const trackWithFeatures = { ...track, audioFeatures };
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const audioFeatures = await response.json();
+
+      console.log(`Audio features response for "${track.name}":`, audioFeatures);
+
+      // Check if Spotify returned null (track has no audio features)
+      if (audioFeatures === null) {
+        alert(`Audio features not available for "${track.name}". This track may not have analysis data. Please try another song.`);
+        setLoading(false);
+        return;
+      }
+
+      // Validate that we have the required fields
+      if (!audioFeatures || audioFeatures.error || typeof audioFeatures.tempo !== 'number') {
+        console.error("Invalid audio features:", audioFeatures);
+        alert(`Could not load audio features for "${track.name}". Please try another song.`);
+        setLoading(false);
+        return;
+      }
+
+      const trackWithFeatures = { ...track, audioFeatures };
       if (slot === 1) {
         setSelectedTrack1(trackWithFeatures);
       } else {
@@ -56,7 +79,9 @@ export default function Home() {
       }
     } catch (error) {
       console.error("Failed to fetch audio features:", error);
+      alert(`Failed to load track data: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+    setLoading(false);
   };
 
   const analyzeMashup = async () => {
@@ -127,16 +152,21 @@ export default function Home() {
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-black to-blue-900 p-8">
       <div className="mx-auto max-w-7xl">
         {/* Header */}
-        <div className="mb-8 flex items-center justify-between">
-          <h1 className="text-4xl font-bold text-white">
-            🎧 DJ Mashup Assistant
-          </h1>
-          <button
-            onClick={() => signOut()}
-            className="rounded-lg bg-red-500 px-4 py-2 text-white hover:bg-red-600"
-          >
-            Sign Out
-          </button>
+        <div className="mb-8">
+          <div className="flex items-center justify-between">
+            <h1 className="text-4xl font-bold text-white">
+              🎧 DJ Mashup Assistant
+            </h1>
+            <button
+              onClick={() => signOut()}
+              className="rounded-lg bg-red-500 px-4 py-2 text-white hover:bg-red-600"
+            >
+              Sign Out
+            </button>
+          </div>
+          <p className="mt-2 text-sm text-yellow-300">
+            ℹ️ Using estimated audio features (Spotify restricted API access for development apps as of Nov 2024)
+          </p>
         </div>
 
         {/* Search */}

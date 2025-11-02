@@ -20,32 +20,49 @@ const LOGIN_URL =
   new URLSearchParams(params).toString();
 
 async function refreshAccessToken(token: any) {
-  const params = new URLSearchParams();
-  params.append("grant_type", "refresh_token");
-  params.append("refresh_token", token.refreshToken);
+  try {
+    const params = new URLSearchParams();
+    params.append("grant_type", "refresh_token");
+    params.append("refresh_token", token.refreshToken);
 
-  const response = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization:
-        "Basic " +
-        Buffer.from(
-          process.env.SPOTIFY_CLIENT_ID +
-            ":" +
-            process.env.SPOTIFY_CLIENT_SECRET
-        ).toString("base64"),
-    },
-    body: params,
-  });
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization:
+          "Basic " +
+          Buffer.from(
+            process.env.SPOTIFY_CLIENT_ID +
+              ":" +
+              process.env.SPOTIFY_CLIENT_SECRET
+          ).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params,
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  return {
-    ...token,
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? token.refreshToken,
-    accessTokenExpires: Date.now() + data.expires_in * 1000,
-  };
+    if (!response.ok) {
+      console.error("Token refresh failed:", data);
+      throw new Error("RefreshAccessTokenError");
+    }
+
+    console.log("Token refreshed successfully");
+
+    return {
+      ...token,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? token.refreshToken,
+      accessTokenExpires: Date.now() + data.expires_in * 1000,
+      error: undefined,
+    };
+  } catch (error) {
+    console.error("Error refreshing access token:", error);
+    return {
+      ...token,
+      error: "RefreshAccessTokenError",
+    };
+  }
 }
 
 export const authOptions: NextAuthOptions = {
@@ -58,7 +75,9 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async jwt({ token, account, user }) {
+      // Initial sign in
       if (account && user) {
+        console.log("Initial sign in - setting up token");
         return {
           ...token,
           accessToken: account.access_token,
@@ -68,16 +87,26 @@ export const authOptions: NextAuthOptions = {
         };
       }
 
-      if (Date.now() < (token.accessTokenExpires as number)) {
+      // Return previous token if the access token has not expired yet
+      if (token.accessTokenExpires && Date.now() < (token.accessTokenExpires as number)) {
+        console.log("Token still valid");
         return token;
       }
 
+      // Access token has expired, try to update it
+      console.log("Token expired, refreshing...");
       return await refreshAccessToken(token);
     },
     async session({ session, token }) {
       session.accessToken = token.accessToken as string;
       session.error = token.error as string;
       session.user = token.user as any;
+      
+      // Log for debugging
+      if (token.error === "RefreshAccessTokenError") {
+        console.error("Session has refresh error - user needs to re-authenticate");
+      }
+      
       return session;
     },
   },
@@ -85,4 +114,3 @@ export const authOptions: NextAuthOptions = {
     signIn: "/",
   },
 };
-
