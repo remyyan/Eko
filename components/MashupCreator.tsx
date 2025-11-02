@@ -3,9 +3,14 @@
 import { useState } from "react";
 
 interface Track {
+  id: string;
   name: string;
   artists: { name: string }[];
-  audioFeatures: any;
+  album: {
+    name: string;
+    images: { url: string }[];
+  };
+  audioFeatures?: any;
 }
 
 interface MashupCreatorProps {

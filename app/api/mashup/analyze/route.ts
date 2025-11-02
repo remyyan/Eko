@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 interface AudioFeatures {
   tempo: number;
@@ -131,11 +127,14 @@ export async function POST(request: Request) {
       track2.audioFeatures
     );
 
-    // Get AI analysis (with fallback if OpenAI is not configured)
+    // Get AI analysis using Google Gemini (FREE!)
     let aiAnalysis = "";
 
-    if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.startsWith("sk-")) {
+    if (process.env.GEMINI_API_KEY) {
       try {
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
         const prompt = `You are a professional DJ assistant. Analyze these two tracks for mashup compatibility:
 
 Track 1: "${track1.name}" by ${track1.artists.map((a: any) => a.name).join(", ")}
@@ -159,20 +158,16 @@ Provide a brief analysis (2-3 sentences) on:
 
 Keep it concise and practical for a DJ.`;
 
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 200,
-        });
-
-        aiAnalysis = completion.choices[0].message.content || "";
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        aiAnalysis = response.text();
       } catch (aiError) {
-        console.error("OpenAI API error:", aiError);
+        console.error("Gemini API error:", aiError);
         // Fallback to basic analysis
         aiAnalysis = generateBasicAnalysis(track1, track2, compatibilityScore);
       }
     } else {
-      // No OpenAI key configured, use basic analysis
+      // No Gemini key configured, use basic analysis
       aiAnalysis = generateBasicAnalysis(track1, track2, compatibilityScore);
     }
 

@@ -287,6 +287,15 @@ export default function Home() {
                 </div>
               </div>
             )}
+
+            {/* Mashup Creator */}
+            {analysis && selectedTrack1 && selectedTrack2 && (
+              <MashupCreator
+                track1={selectedTrack1}
+                track2={selectedTrack2}
+                compatibilityScore={analysis.compatibilityScore}
+              />
+            )}
           </div>
         )}
 
