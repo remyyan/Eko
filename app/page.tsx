@@ -4,6 +4,7 @@ import { signIn, signOut, useSession } from "next-auth/react";
 import { useState, useEffect } from "react";
 import TrackCard from "@/components/TrackCard";
 import MashupCreator from "@/components/MashupCreator";
+import AudioMashupGenerator from "@/components/AudioMashupGenerator";
 
 interface Track {
   id: string;
@@ -18,6 +19,7 @@ interface Track {
 
 export default function Home() {
   const { data: session, status } = useSession();
+  const [tab, setTab] = useState<"spotify" | "upload">("spotify");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Track[]>([]);
   const [selectedTrack1, setSelectedTrack1] = useState<Track | null>(null);
@@ -164,12 +166,36 @@ export default function Home() {
               Sign Out
             </button>
           </div>
-          <p className="mt-2 text-sm text-yellow-300">
-            ℹ️ Using estimated audio features (Spotify restricted API access for development apps as of Nov 2024)
-          </p>
         </div>
 
-        {/* Search */}
+        {/* Tab Navigation */}
+        <div className="mb-8 flex gap-4 border-b border-gray-700">
+          <button
+            onClick={() => setTab("spotify")}
+            className={`px-6 py-3 font-semibold transition-all ${
+              tab === "spotify"
+                ? "border-b-2 border-purple-500 text-purple-400"
+                : "text-gray-400 hover:text-gray-300"
+            }`}
+          >
+            🎵 Spotify Search
+          </button>
+          <button
+            onClick={() => setTab("upload")}
+            className={`px-6 py-3 font-semibold transition-all ${
+              tab === "upload"
+                ? "border-b-2 border-purple-500 text-purple-400"
+                : "text-gray-400 hover:text-gray-300"
+            }`}
+          >
+            📁 Upload Audio Files
+          </button>
+        </div>
+
+        {/* Spotify Tab */}
+        {tab === "spotify" && (
+          <>
+            {/* Search */}
         <div className="mb-8">
           <div className="flex gap-2">
             <input
@@ -331,6 +357,13 @@ export default function Home() {
               ))}
             </div>
           </div>
+        )}
+          </>
+        )}
+
+        {/* Upload Tab */}
+        {tab === "upload" && (
+          <AudioMashupGenerator />
         )}
       </div>
     </div>

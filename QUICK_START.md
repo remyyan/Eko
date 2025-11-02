@@ -1,162 +1,101 @@
-# 🚀 Quick Start Guide
+# 🚀 Quick Start Guide - Real Audio Mashup Generator
 
-## Your DJ Mashup Assistant is Ready!
+## 5-Minute Setup
 
-The app is **currently running** at: **http://192.168.68.148:3000**
+### 1. Install System Dependencies
 
-## ⚠️ CRITICAL: Before You Start
-
-### Add Spotify Redirect URI (Required!)
-
-**You MUST do this or authentication won't work:**
-
-1. Open [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Click on your app
-3. Click **"Settings"** button
-4. Scroll to **"Redirect URIs"**
-5. Enter: `http://192.168.68.148:3000/api/auth/callback/spotify`
-6. Click **"Add"**
-7. Scroll down and click **"Save"**
-
-**Note:** Spotify doesn't allow `localhost` - you must use your local network IP (192.168.68.148)
-
-✅ **Done? Great! Now you can use the app.**
-
-## 🎵 How to Use
-
-### Step 1: Sign In
-1. Go to http://192.168.68.148:3000
-2. Click **"Connect with Spotify"** (green button)
-3. Authorize the app in Spotify
-4. You'll be redirected back to the app
-
-### Step 2: Search for Tracks
-1. Type a song name, artist, or album in the search bar
-2. Press Enter or click **"Search"**
-3. Results will appear below
-
-### Step 3: Select Two Tracks
-1. Click **"Track 1"** button on your first song choice
-2. Click **"Track 2"** button on your second song choice
-3. Both tracks will appear in the "Selected Tracks" section
-
-### Step 4: View Analysis
-The app automatically analyzes the tracks and shows:
-- **Compatibility Score** (0-100%)
-- **BPM Difference** - How far apart the tempos are
-- **Musical Keys** - What key each track is in
-- **AI Recommendation** - Professional DJ advice from GPT-4
-
-## 🎯 Understanding the Results
-
-### Compatibility Score
-- **80-100%** 🟢 Excellent match! These will work great together
-- **60-79%** 🟡 Good match with some adjustments needed
-- **0-59%** 🔴 Challenging mashup, requires significant work
-
-### What the AI Tells You
-- Whether the tracks will work together
-- Specific techniques to use (tempo adjustment, key shifting)
-- Creative suggestions for mixing
-
-### Example Analysis
-```
-Compatibility Score: 87%
-
-BPM Difference: 3 BPM
-Track 1 Key: C Major
-Track 2 Key: G Major
-
-AI Recommendation:
-"Excellent match! The keys are a perfect fifth apart 
-(C to G), which creates harmonic compatibility. The 
-BPM difference is minimal - no adjustment needed. 
-Try mixing the vocals from Track 1 over the 
-instrumental of Track 2."
+**macOS:**
+```bash
+brew install python3 ffmpeg
 ```
 
-## 🎛️ Pro Tips
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install python3 python3-pip ffmpeg
+```
 
-1. **Start with same artist** - Tracks from the same artist often work well
-2. **Look for high scores** - 80%+ usually means easy mixing
-3. **BPM matters most** - Under 10 BPM difference is ideal
-4. **Keys are important** - Same key or perfect fifth (7 semitones) work best
-5. **Trust your ears** - The score is a guide, not a rule!
+**Windows:**
+- Download Python from https://www.python.org/downloads/
+- Download FFmpeg from https://ffmpeg.org/download.html
 
-## 📱 Interface Guide
+### 2. Install Python Libraries
 
-### Search Bar
-- Type any song, artist, or album name
-- Press Enter to search
-- Results show album art, artist, and track name
+```bash
+pip install -r requirements.txt
+```
 
-### Track Selection
-- Each result has two buttons: "Track 1" and "Track 2"
-- Click to assign the track to that slot
-- Click on a selected track to remove it
+### 3. Start the App
 
-### Selected Tracks Panel
-Shows:
-- Album artwork
-- Song and artist name
-- BPM (tempo)
-- Musical key (e.g., "C Major")
-- Energy level (0-100%)
-- Danceability (0-100%)
+```bash
+npm run dev
+```
 
-### Analysis Panel
-Appears when both tracks are selected:
-- Large compatibility score
-- Detailed metrics
-- AI-powered recommendations
+### 4. Open Browser
 
-## 🔄 Workflow Example
+Go to: **http://127.0.0.1:3000**
 
-1. Search: "uptown funk"
-2. Click "Track 1" on "Uptown Funk - Bruno Mars"
-3. Search: "treasure bruno mars"
-4. Click "Track 2" on "Treasure - Bruno Mars"
-5. View the analysis (should be high compatibility!)
-6. Try different combinations
+## 🎵 Generate Your First Mashup
 
-## 🎵 Good Song Pairs to Try
+1. Click **"📁 Upload Audio Files"** tab
+2. Upload two audio files (MP3, WAV, etc.)
+3. Click **"🎛️ Generate Mashup"**
+4. Wait 30-120 seconds
+5. Download your mashup!
 
-### High Compatibility Examples:
-- "Uptown Funk" + "Treasure" (Bruno Mars)
-- "Blinding Lights" + "Save Your Tears" (The Weeknd)
-- "Levitating" + "Don't Start Now" (Dua Lipa)
+## ✅ What You Get
 
-### Interesting Mashups:
-- Different genres but similar BPM
-- Same key but different energy levels
-- Acapella + Instrumental versions
+- ✅ Real audio mashup file (MP3)
+- ✅ Automatic BPM detection
+- ✅ Time-stretched to match BPM
+- ✅ Smooth 3-second crossfade
+- ✅ Professional audio quality
 
-## 🛠️ Troubleshooting
+## 🎯 Features
 
-### Can't Sign In?
-→ Check that you added the Redirect URI to Spotify (see top of this guide)
+| Feature | Status |
+|---------|--------|
+| Audio upload | ✅ Works |
+| BPM detection | ✅ Works |
+| Time stretching | ✅ Works |
+| Crossfading | ✅ Works |
+| MP3 export | ✅ Works |
+| Download | ✅ Works |
+| Spotify search | ✅ Works |
+| AI analysis | ✅ Works (with Gemini API key) |
 
-### Search Not Working?
-→ Make sure you're signed in with Spotify
+## 📋 Requirements
 
-### No AI Recommendations?
-→ Check that your OpenAI API key is valid and has credits
+- Python 3.8+
+- FFmpeg
+- Node.js 18+
+- 2GB RAM minimum
+- 500MB disk space
 
-### App Won't Load?
-→ Make sure dev server is running: `npm run dev`
+## 🆘 Troubleshooting
 
-**For more help, see TROUBLESHOOTING.md**
+**"python3: command not found"**
+→ Install Python and add to PATH
 
-## 📚 Learn More
+**"ffmpeg: command not found"**
+→ Install FFmpeg and add to PATH
 
-- **README.md** - Full project documentation
-- **FEATURES.md** - Detailed feature explanations
-- **SETUP.md** - Complete setup instructions
-- **TROUBLESHOOTING.md** - Common issues and solutions
+**"ModuleNotFoundError"**
+→ Run: `pip install -r requirements.txt`
 
-## 🎉 You're All Set!
+**"Failed to generate mashup"**
+→ Check console for error details
 
-Open http://192.168.68.148:3000 and start finding perfect mashup combinations!
+## 📚 Full Documentation
 
-Happy mixing! 🎧✨
+- **AUDIO_MASHUP_SETUP.md** - Detailed setup guide
+- **REAL_MASHUP_IMPLEMENTATION.md** - Technical details
+- **GEMINI_SETUP.md** - AI API setup
+
+## 🎉 You're Ready!
+
+Your DJ mashup assistant is ready to use. Start creating mashups now!
+
+---
+
+**Questions?** Check the documentation files or console output for help.
 
