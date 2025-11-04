@@ -80,7 +80,7 @@ export async function POST(request: Request) {
       // Read the generated mashup file
       const mashupBuffer = fs.readFileSync(outputPath);
 
-      // Return the audio file
+      // Return the audio file with AI suggestions
       return new NextResponse(mashupBuffer, {
         headers: {
           "Content-Type": "audio/mpeg",
@@ -89,6 +89,8 @@ export async function POST(request: Request) {
             track1_bpm: result.track1_bpm,
             track2_bpm: result.track2_bpm,
             target_bpm: result.target_bpm,
+            transition_type: result.transition_type,
+            ai_suggestions: result.ai_suggestions,
             file_size_mb: result.file_size_mb,
           }),
         },

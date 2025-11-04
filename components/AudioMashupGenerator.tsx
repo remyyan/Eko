@@ -53,7 +53,9 @@ export default function AudioMashupGenerator() {
       // Get mashup info from headers
       const info = response.headers.get("X-Mashup-Info");
       if (info) {
-        setMashupInfo(JSON.parse(info));
+        const parsedInfo = JSON.parse(info);
+        console.log("Mashup Info:", parsedInfo);
+        setMashupInfo(parsedInfo);
       }
 
       // Create blob URL for audio
@@ -205,6 +207,35 @@ export default function AudioMashupGenerator() {
           <h2 className="mb-6 text-3xl font-bold text-white">
             ✅ Mashup Generated!
           </h2>
+
+          {/* AI Decision Section */}
+          {mashupInfo?.ai_suggestions && (
+            <div className="mb-6 rounded-lg bg-yellow-900/30 border border-yellow-600/50 p-6">
+              <h3 className="mb-4 text-xl font-bold text-yellow-300">
+                ✨ AI Transition Decision
+              </h3>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm text-gray-400">Transition Type:</p>
+                  <p className="text-2xl font-bold text-yellow-200">
+                    {mashupInfo.transition_type.toUpperCase().replace(/_/g, " ")}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-400">Why?</p>
+                  <p className="text-lg text-yellow-100">
+                    {mashupInfo.ai_suggestions.reason}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-400">Transition Duration:</p>
+                  <p className="text-lg font-semibold text-yellow-200">
+                    {mashupInfo.ai_suggestions.crossfade_duration_ms}ms
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Mashup Info */}
           {mashupInfo && (
