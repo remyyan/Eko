@@ -3,8 +3,7 @@
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useState, useEffect } from "react";
 import TrackCard from "@/components/TrackCard";
-import MashupCreator from "@/components/MashupCreator";
-import AudioMashupGenerator from "@/components/AudioMashupGenerator";
+import DJPlayer from "@/components/DJPlayer";
 
 interface Track {
   id: string;
@@ -19,12 +18,10 @@ interface Track {
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [tab, setTab] = useState<"spotify" | "upload">("spotify");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Track[]>([]);
-  const [selectedTrack1, setSelectedTrack1] = useState<Track | null>(null);
-  const [selectedTrack2, setSelectedTrack2] = useState<Track | null>(null);
-  const [analysis, setAnalysis] = useState<any>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [loading, setLoading] = useState(false);
 
   const searchTracks = async () => {
@@ -43,7 +40,7 @@ export default function Home() {
     setLoading(false);
   };
 
-  const selectTrack = async (track: Track, slot: 1 | 2) => {
+  const startPlayback = async (track: Track) => {
     setLoading(true);
     try {
       const response = await fetch(
@@ -56,92 +53,43 @@ export default function Home() {
 
       const audioFeatures = await response.json();
 
-      console.log(`Audio features response for "${track.name}":`, audioFeatures);
-
-      // Check if Spotify returned null (track has no audio features)
-      if (audioFeatures === null) {
-        alert(`Audio features not available for "${track.name}". This track may not have analysis data. Please try another song.`);
-        setLoading(false);
-        return;
-      }
-
-      // Validate that we have the required fields
-      if (!audioFeatures || audioFeatures.error || typeof audioFeatures.tempo !== 'number') {
-        console.error("Invalid audio features:", audioFeatures);
+      if (audioFeatures === null || !audioFeatures || audioFeatures.error || typeof audioFeatures.tempo !== 'number') {
         alert(`Could not load audio features for "${track.name}". Please try another song.`);
         setLoading(false);
         return;
       }
 
       const trackWithFeatures = { ...track, audioFeatures };
-      if (slot === 1) {
-        setSelectedTrack1(trackWithFeatures);
-      } else {
-        setSelectedTrack2(trackWithFeatures);
-      }
+      setCurrentTrack(trackWithFeatures);
+      setIsPlaying(true);
     } catch (error) {
-      console.error("Failed to fetch audio features:", error);
-      alert(`Failed to load track data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error("Failed to start playback:", error);
+      alert(`Failed to load track: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
     setLoading(false);
   };
 
-  const analyzeMashup = async () => {
-    if (!selectedTrack1 || !selectedTrack2) return;
-
-    try {
-      const response = await fetch("/api/mashup/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          track1: selectedTrack1,
-          track2: selectedTrack2,
-        }),
-      });
-      const data = await response.json();
-
-      // Only set analysis if the response is successful
-      if (response.ok && data.details) {
-        setAnalysis(data);
-      } else {
-        console.error("Analysis error:", data.error || "Unknown error");
-        setAnalysis(null);
-      }
-    } catch (error) {
-      console.error("Analysis failed:", error);
-      setAnalysis(null);
-    }
-  };
-
-  useEffect(() => {
-    if (selectedTrack1 && selectedTrack2) {
-      analyzeMashup();
-    } else {
-      setAnalysis(null);
-    }
-  }, [selectedTrack1, selectedTrack2]);
-
   if (status === "loading") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-purple-900 via-black to-blue-900">
-        <div className="text-white text-xl">Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-black text-white">
+        <div>Loading...</div>
       </div>
     );
   }
 
   if (!session) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-purple-900 via-black to-blue-900">
+      <div className="flex min-h-screen items-center justify-center bg-black text-white">
         <div className="text-center">
-          <h1 className="mb-4 text-6xl font-bold text-white">
-            🎧 DJ Mashup Assistant
+          <h1 className="mb-4 text-4xl font-bold">
+            DJ Mix Assistant
           </h1>
-          <p className="mb-8 text-xl text-gray-300">
+          <p className="mb-8 text-gray-400">
             AI-powered tool to find perfect song combinations
           </p>
           <button
             onClick={() => signIn("spotify")}
-            className="rounded-full bg-green-500 px-8 py-4 text-lg font-semibold text-white transition-all hover:bg-green-600 hover:scale-105"
+            className="bg-white text-black px-8 py-3 font-semibold hover:bg-gray-200"
           >
             Connect with Spotify
           </button>
@@ -151,221 +99,77 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-black to-blue-900 p-8">
-      <div className="mx-auto max-w-7xl">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <h1 className="text-4xl font-bold text-white">
-              🎧 DJ Mashup Assistant
-            </h1>
-            <button
-              onClick={() => signOut()}
-              className="rounded-lg bg-red-500 px-4 py-2 text-white hover:bg-red-600"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="mb-8 flex gap-4 border-b border-gray-700">
-          <button
-            onClick={() => setTab("spotify")}
-            className={`px-6 py-3 font-semibold transition-all ${
-              tab === "spotify"
-                ? "border-b-2 border-purple-500 text-purple-400"
-                : "text-gray-400 hover:text-gray-300"
-            }`}
-          >
-            🎵 Spotify Search
-          </button>
-          <button
-            onClick={() => setTab("upload")}
-            className={`px-6 py-3 font-semibold transition-all ${
-              tab === "upload"
-                ? "border-b-2 border-purple-500 text-purple-400"
-                : "text-gray-400 hover:text-gray-300"
-            }`}
-          >
-            📁 Upload Audio Files
-          </button>
-        </div>
-
-        {/* Spotify Tab */}
-        {tab === "spotify" && (
-          <>
-            {/* Search */}
-        <div className="mb-8">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && searchTracks()}
-              placeholder="Search for tracks..."
-              className="flex-1 rounded-lg border-2 border-purple-500 bg-gray-900 px-4 py-3 text-white placeholder-gray-400 focus:border-purple-400 focus:outline-none"
-            />
-            <button
-              onClick={searchTracks}
-              disabled={loading}
-              className="rounded-lg bg-purple-500 px-6 py-3 font-semibold text-white hover:bg-purple-600 disabled:opacity-50"
-            >
-              {loading ? "Searching..." : "Search"}
-            </button>
-          </div>
-        </div>
-
-        {/* Selected Tracks */}
-        {(selectedTrack1 || selectedTrack2) && (
-          <div className="mb-8 rounded-lg bg-gray-900/50 p-6">
-            <h2 className="mb-4 text-2xl font-bold text-white">
-              Selected Tracks
-            </h2>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <h3 className="mb-2 text-sm font-semibold text-purple-400">
-                  TRACK 1
-                </h3>
-                {selectedTrack1 ? (
-                  <TrackCard
-                    track={selectedTrack1}
-                    onSelect={() => setSelectedTrack1(null)}
-                    isSelected={true}
-                    showFeatures={true}
-                  />
-                ) : (
-                  <div className="rounded-lg border-2 border-dashed border-gray-600 p-8 text-center text-gray-400">
-                    Select first track
-                  </div>
-                )}
-              </div>
-              <div>
-                <h3 className="mb-2 text-sm font-semibold text-blue-400">
-                  TRACK 2
-                </h3>
-                {selectedTrack2 ? (
-                  <TrackCard
-                    track={selectedTrack2}
-                    onSelect={() => setSelectedTrack2(null)}
-                    isSelected={true}
-                    showFeatures={true}
-                  />
-                ) : (
-                  <div className="rounded-lg border-2 border-dashed border-gray-600 p-8 text-center text-gray-400">
-                    Select second track
-                  </div>
-                )}
+    <div className="min-h-screen bg-black text-white">
+      {isPlaying && currentTrack ? (
+        <DJPlayer initialTrack={currentTrack} onStop={() => setIsPlaying(false)} />
+      ) : (
+        <div className="p-8">
+          <div className="mx-auto max-w-7xl">
+            {/* Header */}
+            <div className="mb-8">
+              <div className="flex items-center justify-between">
+                <h1 className="text-3xl font-bold">
+                  DJ Mix Assistant
+                </h1>
+                <button
+                  onClick={() => signOut()}
+                  className="bg-gray-800 px-4 py-2 hover:bg-gray-700"
+                >
+                  Sign Out
+                </button>
               </div>
             </div>
 
-            {/* Analysis Results */}
-            {analysis && (
-              <div className="mt-6 rounded-lg bg-gradient-to-r from-purple-900/50 to-blue-900/50 p-6">
-                <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-2xl font-bold text-white">
-                    Mashup Analysis
-                  </h3>
-                  <div className="text-right">
-                    <div className="text-sm text-gray-400">
-                      Compatibility Score
-                    </div>
-                    <div
-                      className={`text-4xl font-bold ${
-                        analysis.compatibilityScore >= 80
-                          ? "text-green-400"
-                          : analysis.compatibilityScore >= 60
-                          ? "text-yellow-400"
-                          : "text-red-400"
-                      }`}
-                    >
-                      {analysis.compatibilityScore}%
-                    </div>
-                  </div>
-                </div>
+            {/* Search Section */}
+            <div className="mb-8">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchTracks()}
+                  placeholder="Search for a track to start mixing..."
+                  className="flex-1 border border-gray-700 bg-gray-900 px-4 py-3 text-white placeholder-gray-500 focus:border-gray-600 focus:outline-none"
+                />
+                <button
+                  onClick={searchTracks}
+                  disabled={loading}
+                  className="bg-white text-black px-6 py-3 font-semibold hover:bg-gray-200 disabled:opacity-50"
+                >
+                  {loading ? "Searching..." : "Search"}
+                </button>
+              </div>
+            </div>
 
-                <div className="mb-4 grid grid-cols-3 gap-4 text-sm">
-                  <div className="rounded-lg bg-black/30 p-3">
-                    <div className="text-gray-400">BPM Difference</div>
-                    <div className="text-xl font-semibold text-white">
-                      {Math.round(analysis.details.bpmDiff)} BPM
+            {/* Search Results */}
+            {searchResults.length > 0 && (
+              <div>
+                <h2 className="mb-4 text-xl font-bold">
+                  Search Results
+                </h2>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {searchResults.map((track) => (
+                    <div key={track.id}>
+                      <button
+                        onClick={() => startPlayback(track)}
+                        disabled={loading}
+                        className="mb-2 w-full bg-white text-black px-4 py-2 font-semibold hover:bg-gray-200 disabled:opacity-50"
+                      >
+                        {loading ? "Loading..." : "Start Mix"}
+                      </button>
+                      <TrackCard
+                        track={track}
+                        onSelect={() => {}}
+                        isSelected={false}
+                      />
                     </div>
-                  </div>
-                  <div className="rounded-lg bg-black/30 p-3">
-                    <div className="text-gray-400">Track 1 Key</div>
-                    <div className="text-xl font-semibold text-white">
-                      {analysis.details.track1Key}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-black/30 p-3">
-                    <div className="text-gray-400">Track 2 Key</div>
-                    <div className="text-xl font-semibold text-white">
-                      {analysis.details.track2Key}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-lg bg-black/30 p-4">
-                  <h4 className="mb-2 font-semibold text-purple-400">
-                    AI Recommendation
-                  </h4>
-                  <p className="text-gray-300">{analysis.aiAnalysis}</p>
+                  ))}
                 </div>
               </div>
             )}
-
-            {/* Mashup Creator */}
-            {analysis && selectedTrack1 && selectedTrack2 && (
-              <MashupCreator
-                track1={selectedTrack1}
-                track2={selectedTrack2}
-                compatibilityScore={analysis.compatibilityScore}
-              />
-            )}
           </div>
-        )}
-
-        {/* Search Results */}
-        {searchResults.length > 0 && (
-          <div>
-            <h2 className="mb-4 text-2xl font-bold text-white">
-              Search Results
-            </h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {searchResults.map((track) => (
-                <div key={track.id}>
-                  <div className="mb-2 flex gap-2">
-                    <button
-                      onClick={() => selectTrack(track, 1)}
-                      className="flex-1 rounded bg-purple-500 px-2 py-1 text-xs text-white hover:bg-purple-600"
-                    >
-                      Track 1
-                    </button>
-                    <button
-                      onClick={() => selectTrack(track, 2)}
-                      className="flex-1 rounded bg-blue-500 px-2 py-1 text-xs text-white hover:bg-blue-600"
-                    >
-                      Track 2
-                    </button>
-                  </div>
-                  <TrackCard
-                    track={track}
-                    onSelect={() => {}}
-                    isSelected={false}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-          </>
-        )}
-
-        {/* Upload Tab */}
-        {tab === "upload" && (
-          <AudioMashupGenerator />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
