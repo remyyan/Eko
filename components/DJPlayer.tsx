@@ -46,7 +46,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       const playerInstance = new window.Spotify.Player({
         name: "DJ Live Mix",
         getOAuthToken: (cb: (token: string) => void) => {
-          cb(session.accessToken);
+          cb(session.accessToken!);
         },
         volume: 0.7,
       });

@@ -56,7 +56,7 @@ export default function DJInterface({ track1, track2 }: DJInterfaceProps) {
       const player1Instance = new window.Spotify.Player({
         name: "DJ Deck 1",
         getOAuthToken: (cb: (token: string) => void) => {
-          cb(session.accessToken);
+          cb(session.accessToken!);
         },
         volume: 0.5,
       });
@@ -65,7 +65,7 @@ export default function DJInterface({ track1, track2 }: DJInterfaceProps) {
       const player2Instance = new window.Spotify.Player({
         name: "DJ Deck 2",
         getOAuthToken: (cb: (token: string) => void) => {
-          cb(session.accessToken);
+          cb(session.accessToken!);
         },
         volume: 0.5,
       });

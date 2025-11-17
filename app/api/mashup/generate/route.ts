@@ -3,7 +3,6 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
-import FormData from "form-data";
 
 const execAsync = promisify(exec);
 
