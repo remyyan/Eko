@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSession } from "next-auth/react";
 
 interface Track {
@@ -35,6 +35,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
+  const transitionTriggeredRef = useRef(false);
+
+  const currentTrack = queue[currentIndex];
 
   // Load Spotify Web Playback SDK
   useEffect(() => {
@@ -84,20 +88,46 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     };
   }, [session?.accessToken]);
 
-  // Update position regularly while playing
+  // Update position regularly while playing and handle auto-transition
   useEffect(() => {
-    if (!player || !isPlaying) return;
+    if (!player) return;
 
     const interval = setInterval(async () => {
       const state = await player.getCurrentState();
       if (state) {
         setPosition(state.position);
         setDuration(state.duration);
+        setIsPlaying(!state.paused);
+
+        // Check if song is ending (within 2 seconds of end) and is playing
+        const timeRemaining = state.duration - state.position;
+        if (!state.paused && timeRemaining <= 2000 && timeRemaining > 0 && !transitionTriggeredRef.current) {
+          transitionTriggeredRef.current = true;
+          console.log("Auto-transitioning to next track...");
+
+          // Auto-advance to next track
+          if (currentIndex < queue.length - 1) {
+            // Move to next track in queue
+            const nextIdx = currentIndex + 1;
+            setCurrentIndex(nextIdx);
+            playTrack(queue[nextIdx]);
+          } else if (nextTrack) {
+            // If at end of queue, add next track and play it
+            setQueue(prevQueue => [...prevQueue, nextTrack]);
+            setCurrentIndex(prevIdx => prevIdx + 1);
+            playTrack(nextTrack);
+          }
+        }
+
+        // Reset transition flag when there's more than 5 seconds left
+        if (timeRemaining > 5000) {
+          transitionTriggeredRef.current = false;
+        }
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [player, isPlaying]);
+  }, [player, currentIndex, queue, nextTrack]);
 
   // Get next track recommendation
   useEffect(() => {
@@ -120,6 +150,30 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     };
     getNextTrack();
   }, [currentIndex, queue]);
+
+  // Get transition recommendations when we have both tracks
+  useEffect(() => {
+    const getTransitionRecommendations = async () => {
+      if (!currentTrack || !nextTrack) return;
+
+      try {
+        const response = await fetch("/api/mashup/transition", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentTrack, nextTrack }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setTransitionRecommendations(data.transitions || []);
+        }
+      } catch (error) {
+        console.error("Failed to get transition recommendations:", error);
+      }
+    };
+
+    getTransitionRecommendations();
+  }, [currentTrack, nextTrack]);
 
   const playTrack = async (track: Track) => {
     if (!player || !deviceId) {
@@ -150,15 +204,34 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const togglePlayPause = async () => {
     if (!player || !deviceId) return;
 
-    if (isPlaying) {
-      player.pause();
-    } else {
-      // If never played before, start the current track
-      if (!isPlaying && currentIndex === 0) {
+    try {
+      const state = await player.getCurrentState();
+
+      if (!state) {
+        // No track loaded, play current track
         await playTrack(currentTrack);
+      } else if (state.paused) {
+        // Track is paused, resume it
+        await player.resume();
       } else {
-        player.resume();
+        // Track is playing, pause it
+        await player.pause();
       }
+    } catch (error) {
+      console.error("Toggle play/pause failed:", error);
+    }
+  };
+
+  const stopPlayback = async () => {
+    if (!player) return;
+
+    try {
+      await player.pause();
+      await player.seek(0);
+      setPosition(0);
+      setIsPlaying(false);
+    } catch (error) {
+      console.error("Stop failed:", error);
     }
   };
 
@@ -208,7 +281,12 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const currentTrack = queue[currentIndex];
+  const getColorForRating = (rating: number) => {
+    if (rating >= 80) return "bg-green-600";
+    if (rating >= 60) return "bg-yellow-600";
+    if (rating >= 40) return "bg-orange-600";
+    return "bg-red-600";
+  };
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
@@ -261,7 +339,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                 Skip
               </button>
               <button
-                onClick={onStop}
+                onClick={async () => {
+                  await stopPlayback();
+                  onStop();
+                }}
                 className="bg-gray-800 text-white px-6 py-2 hover:bg-gray-700 rounded"
               >
                 Stop
@@ -303,24 +384,42 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         {/* Bottom: Transition/Remix Hub */}
         <div className="flex-1 p-6 overflow-y-auto">
           <h2 className="text-xl font-bold mb-4">Transition/Remix Hub</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <button className="bg-gray-800 border border-gray-700 p-6 text-left hover:bg-gray-750 rounded">
-              <h3 className="font-semibold mb-2 text-lg">Crossfade</h3>
-              <p className="text-sm text-gray-400">Smooth volume transition between tracks</p>
-            </button>
-            <button className="bg-gray-800 border border-gray-700 p-6 text-left hover:bg-gray-750 rounded">
-              <h3 className="font-semibold mb-2 text-lg">Beat Match</h3>
-              <p className="text-sm text-gray-400">Sync BPM and align beats</p>
-            </button>
-            <button className="bg-gray-800 border border-gray-700 p-6 text-left hover:bg-gray-750 rounded">
-              <h3 className="font-semibold mb-2 text-lg">Echo Fade</h3>
-              <p className="text-sm text-gray-400">Echo effect transition</p>
-            </button>
-            <button className="bg-gray-800 border border-gray-700 p-6 text-left hover:bg-gray-750 rounded">
-              <h3 className="font-semibold mb-2 text-lg">Filter Sweep</h3>
-              <p className="text-sm text-gray-400">Frequency filter transition</p>
-            </button>
-          </div>
+          {transitionRecommendations.length === 0 ? (
+            <div className="text-center text-gray-400 py-12">
+              <p className="mb-2">AI analyzing transition options...</p>
+              <p className="text-sm">Add a track to the queue to see recommendations</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {transitionRecommendations.map((transition: any, index: number) => (
+                <button
+                  key={index}
+                  className="bg-gray-800 border-2 border-gray-700 p-5 text-left hover:border-gray-600 rounded-lg transition-all relative overflow-hidden"
+                >
+                  {/* Color-coded rating bar */}
+                  <div
+                    className={`absolute top-0 left-0 h-1 ${getColorForRating(transition.rating)}`}
+                    style={{ width: `${transition.rating}%` }}
+                  />
+
+                  <div className="flex items-start justify-between mb-2">
+                    <h3 className="font-semibold text-lg">{transition.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-bold px-2 py-1 rounded ${getColorForRating(transition.rating)} text-white`}>
+                        {transition.rating}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-gray-400 mb-2">
+                    Start: {transition.startTime}s before end
+                  </p>
+
+                  <p className="text-sm text-gray-300">{transition.reason}</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -328,46 +427,49 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       <div className="w-96 border-l border-gray-800 bg-gray-900 flex flex-col">
         <div className="p-4 border-b border-gray-800">
           <h2 className="text-lg font-bold">Queue</h2>
-          <p className="text-sm text-gray-400">{queue.length} tracks</p>
+          <p className="text-sm text-gray-400">{queue.length - currentIndex} tracks</p>
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {/* Current Queue */}
-          {queue.map((track, index) => (
-            <div
-              key={`${track.id}-${index}`}
-              className={`p-3 border-b border-gray-800 ${
-                index === currentIndex ? "bg-gray-800" : "hover:bg-gray-800"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                {track.album?.images?.[0]?.url && (
-                  <img
-                    src={track.album.images[0].url}
-                    alt={track.name}
-                    className="h-12 w-12"
-                  />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">
-                    {index === currentIndex && "▶ "}
-                    {track.name}
-                  </p>
-                  <p className="text-sm text-gray-400 truncate">
-                    {track.artists.map(a => a.name).join(", ")}
-                  </p>
+          {/* Current Queue - only show current and upcoming tracks */}
+          {queue.slice(currentIndex).map((track, relativeIndex) => {
+            const actualIndex = currentIndex + relativeIndex;
+            return (
+              <div
+                key={`${track.id}-${actualIndex}`}
+                className={`p-3 border-b border-gray-800 ${
+                  relativeIndex === 0 ? "bg-gray-800" : "hover:bg-gray-800"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {track.album?.images?.[0]?.url && (
+                    <img
+                      src={track.album.images[0].url}
+                      alt={track.name}
+                      className="h-12 w-12"
+                    />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">
+                      {relativeIndex === 0 && "▶ "}
+                      {track.name}
+                    </p>
+                    <p className="text-sm text-gray-400 truncate">
+                      {track.artists.map(a => a.name).join(", ")}
+                    </p>
+                  </div>
+                  {relativeIndex > 0 && (
+                    <button
+                      onClick={() => removeFromQueue(actualIndex)}
+                      className="text-gray-400 hover:text-white text-sm"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-                {index > currentIndex && (
-                  <button
-                    onClick={() => removeFromQueue(index)}
-                    className="text-gray-400 hover:text-white text-sm"
-                  >
-                    ✕
-                  </button>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* AI Recommendation */}
           {nextTrack && (
