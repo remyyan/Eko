@@ -73,7 +73,7 @@ Respond ONLY with JSON (no markdown):
 
     const searchResponse = await fetch(
       `https://www.googleapis.com/youtube/v3/search?` +
-        `part=snippet&type=video&videoCategoryId=10&maxResults=1&q=${encodeURIComponent(searchQuery)}&key=${youtubeApiKey}`
+        `part=snippet&type=video&videoCategoryId=10&videoDuration=medium&maxResults=5&q=${encodeURIComponent(searchQuery)}&key=${youtubeApiKey}`
     );
 
     if (!searchResponse.ok) {
@@ -81,7 +81,42 @@ Respond ONLY with JSON (no markdown):
     }
 
     const searchData = await searchResponse.json();
-    const video = searchData.items?.[0];
+
+    // Filter and score results to get the best music match
+    const filteredVideos = searchData.items?.filter((item: any) => {
+      const title = item.snippet.title.toLowerCase();
+
+      // Exclude non-music content
+      if (title.includes('#shorts') ||
+          title.includes('live stream') ||
+          title.includes('podcast') ||
+          title.includes('interview') ||
+          title.includes('reaction') ||
+          title.includes('tutorial') ||
+          title.includes('cover') && title.includes('tutorial')) {
+        return false;
+      }
+
+      return true;
+    }) || [];
+
+    // Score results
+    const scoredVideos = filteredVideos.map((item: any) => {
+      const title = item.snippet.title.toLowerCase();
+      const channelTitle = item.snippet.channelTitle.toLowerCase();
+      let score = 0;
+
+      if (title.includes('official')) score += 10;
+      if (title.includes('audio')) score += 8;
+      if (channelTitle.includes('vevo')) score += 15;
+      if (channelTitle.includes('official')) score += 10;
+      if (channelTitle.includes('records')) score += 8;
+
+      return { item, score };
+    });
+
+    // Get the best match
+    const video = scoredVideos.sort((a: any, b: any) => b.score - a.score)[0]?.item;
 
     if (!video) {
       return NextResponse.json(

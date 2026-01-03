@@ -26,21 +26,30 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [queue, setQueue] = useState<Track[]>([initialTrack]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [player, setPlayer] = useState<any>(null);
-  const [playerReady, setPlayerReady] = useState(false);
+
+  // Dual players for crossfading
+  const [playerA, setPlayerA] = useState<any>(null);
+  const [playerB, setPlayerB] = useState<any>(null);
+  const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A');
+  const [playersReady, setPlayersReady] = useState({ A: false, B: false });
+
   const [nextTrack, setNextTrack] = useState<Track | null>(null);
   const [nextReason, setNextReason] = useState<string>("");
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [transitionProgress, setTransitionProgress] = useState(0);
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
   const lastTransitionPairRef = useRef<string>("");
-  const playerContainerRef = useRef<HTMLDivElement>(null);
+  const playerAContainerRef = useRef<HTMLDivElement>(null);
+  const playerBContainerRef = useRef<HTMLDivElement>(null);
   const positionIntervalRef = useRef<any>(null);
 
   const currentTrack = queue[currentIndex];
+  const player = activePlayer === 'A' ? playerA : playerB;
+  const playerReady = playersReady[activePlayer];
 
-  // Load YouTube IFrame API
+  // Load YouTube IFrame API and initialize dual players
   useEffect(() => {
     // Load YouTube IFrame API
     if (!window.YT) {
@@ -51,9 +60,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     }
 
     window.onYouTubeIframeAPIReady = () => {
-      if (!playerContainerRef.current) return;
+      if (!playerAContainerRef.current || !playerBContainerRef.current) return;
 
-      const playerInstance = new window.YT.Player(playerContainerRef.current, {
+      // Initialize Player A
+      new window.YT.Player(playerAContainerRef.current, {
         height: "0",
         width: "0",
         videoId: initialTrack.id,
@@ -66,37 +76,76 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         },
         events: {
           onReady: (event: any) => {
-            console.log("YouTube player ready");
-            setPlayer(event.target);
-            setPlayerReady(true);
+            console.log("YouTube Player A ready");
+            setPlayerA(event.target);
+            setPlayersReady(prev => ({ ...prev, A: true }));
             setDuration(event.target.getDuration() * 1000);
           },
           onStateChange: (event: any) => {
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              setIsPlaying(true);
-              setDuration(event.target.getDuration() * 1000);
-            } else if (event.data === window.YT.PlayerState.PAUSED) {
-              setIsPlaying(false);
-            } else if (event.data === window.YT.PlayerState.ENDED) {
-              // Auto-play next track
-              skipToNext();
+            if (activePlayer === 'A') {
+              if (event.data === window.YT.PlayerState.PLAYING) {
+                setIsPlaying(true);
+                setDuration(event.target.getDuration() * 1000);
+              } else if (event.data === window.YT.PlayerState.PAUSED) {
+                setIsPlaying(false);
+              } else if (event.data === window.YT.PlayerState.ENDED) {
+                skipToNext();
+              }
             }
           },
           onError: (event: any) => {
-            console.error("YouTube player error:", event.data);
+            console.error("YouTube Player A error:", event.data);
+          },
+        },
+      });
+
+      // Initialize Player B
+      new window.YT.Player(playerBContainerRef.current, {
+        height: "0",
+        width: "0",
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          modestbranding: 1,
+        },
+        events: {
+          onReady: (event: any) => {
+            console.log("YouTube Player B ready");
+            setPlayerB(event.target);
+            setPlayersReady(prev => ({ ...prev, B: true }));
+          },
+          onStateChange: (event: any) => {
+            if (activePlayer === 'B') {
+              if (event.data === window.YT.PlayerState.PLAYING) {
+                setIsPlaying(true);
+                setDuration(event.target.getDuration() * 1000);
+              } else if (event.data === window.YT.PlayerState.PAUSED) {
+                setIsPlaying(false);
+              } else if (event.data === window.YT.PlayerState.ENDED) {
+                skipToNext();
+              }
+            }
+          },
+          onError: (event: any) => {
+            console.error("YouTube Player B error:", event.data);
           },
         },
       });
     };
 
-    // If YT is already loaded, initialize player
+    // If YT is already loaded, initialize players
     if (window.YT && window.YT.Player) {
       window.onYouTubeIframeAPIReady();
     }
 
     return () => {
-      if (player && player.destroy) {
-        player.destroy();
+      if (playerA && playerA.destroy) {
+        playerA.destroy();
+      }
+      if (playerB && playerB.destroy) {
+        playerB.destroy();
       }
       if (positionIntervalRef.current) {
         clearInterval(positionIntervalRef.current);
@@ -309,78 +358,193 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   };
 
   const executeTransition = async (transition: any) => {
-    if (!nextTrack || !player || !playerReady) return;
+    if (!nextTrack || !playerA || !playerB || !playersReady.A || !playersReady.B) return;
 
     setIsTransitioning(true);
+    setTransitionProgress(0);
     console.log(`Executing ${transition.name} transition`);
 
     try {
+      // Determine which track to play next
+      let trackToPlay = nextTrack;
+      if (currentIndex < queue.length - 1) {
+        const nextIdx = currentIndex + 1;
+        trackToPlay = queue[nextIdx];
+      }
+
+      // Get current and next players
+      const currentPlayer = activePlayer === 'A' ? playerA : playerB;
+      const nextPlayer = activePlayer === 'A' ? playerB : playerA;
+
       // Calculate transition start time
       const transitionStartTime = duration - (transition.startTime * 1000);
 
       // Seek to transition point if not already there
       if (position < transitionStartTime - 1000) {
         console.log(`Seeking to ${transition.startTime}s before end`);
-        player.seekTo(transitionStartTime / 1000, true);
+        currentPlayer.seekTo(transitionStartTime / 1000, true);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      // Quick fade out over 2 seconds
-      console.log("Fading out current track...");
-      const fadeSteps = 20;
-      const fadeInterval = 100; // 100ms per step = 2 seconds total
+      // Load next track in the inactive player
+      console.log("Loading next track:", trackToPlay.name);
+      nextPlayer.loadVideoById(trackToPlay.id);
+      nextPlayer.setVolume(0);
+      await new Promise(resolve => setTimeout(resolve, 500));
 
-      for (let i = 0; i <= fadeSteps; i++) {
-        const volume = 100 * (1 - (i / fadeSteps));
-        player.setVolume(volume);
-        await new Promise(resolve => setTimeout(resolve, fadeInterval));
+      // Execute transition based on type
+      switch (transition.name) {
+        case "Crossfade":
+          await executeCrossfade(currentPlayer, nextPlayer, transition.startTime);
+          break;
+        case "Beat Match":
+          await executeBeatMatch(currentPlayer, nextPlayer, transition.startTime);
+          break;
+        case "Echo Fade":
+          await executeEchoFade(currentPlayer, nextPlayer, transition.startTime);
+          break;
+        case "Filter Sweep":
+          await executeFilterSweep(currentPlayer, nextPlayer, transition.startTime);
+          break;
+        default:
+          await executeCrossfade(currentPlayer, nextPlayer, transition.startTime);
       }
 
-      // Determine which track to play next
-      let trackToPlay = nextTrack;
+      // Update state
       if (currentIndex < queue.length - 1) {
-        const nextIdx = currentIndex + 1;
-        setCurrentIndex(nextIdx);
-        trackToPlay = queue[nextIdx];
+        setCurrentIndex(currentIndex + 1);
       } else {
         setQueue(prevQueue => [...prevQueue, nextTrack]);
         setCurrentIndex(prevIdx => prevIdx + 1);
       }
 
-      // Start next track at low volume
-      console.log("Starting next track:", trackToPlay.name);
-      player.setVolume(0);
-      await playTrack(trackToPlay);
-
-      // Wait for track to start
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      // Quick fade in over 2 seconds
-      console.log("Fading in next track...");
-      for (let i = 0; i <= fadeSteps; i++) {
-        const volume = 100 * (i / fadeSteps);
-        player.setVolume(volume);
-        await new Promise(resolve => setTimeout(resolve, fadeInterval));
-      }
+      // Switch active player
+      setActivePlayer(activePlayer === 'A' ? 'B' : 'A');
+      setDuration(nextPlayer.getDuration() * 1000);
 
       console.log("Transition complete!");
       setIsTransitioning(false);
+      setTransitionProgress(0);
     } catch (error) {
       console.error("Transition failed:", error);
-      // Reset volume
+      // Reset volumes
       try {
-        player.setVolume(100);
+        playerA.setVolume(100);
+        playerB.setVolume(0);
       } catch (e) {
         // Ignore
       }
       setIsTransitioning(false);
+      setTransitionProgress(0);
     }
+  };
+
+  // Crossfade: Smooth volume transition
+  const executeCrossfade = async (currentPlayer: any, nextPlayer: any, duration: number) => {
+    const steps = 40;
+    const interval = (duration * 1000) / steps;
+
+    nextPlayer.playVideo();
+
+    for (let i = 0; i <= steps; i++) {
+      const progress = i / steps;
+      setTransitionProgress(progress * 100);
+
+      currentPlayer.setVolume(100 * (1 - progress));
+      nextPlayer.setVolume(100 * progress);
+
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+
+    currentPlayer.pauseVideo();
+    currentPlayer.seekTo(0, true);
+  };
+
+  // Beat Match: Quick cut with volume swell
+  const executeBeatMatch = async (currentPlayer: any, nextPlayer: any, duration: number) => {
+    const steps = 20;
+    const interval = (duration * 1000) / steps;
+
+    // Quick fade out
+    for (let i = 0; i <= steps / 2; i++) {
+      const progress = i / (steps / 2);
+      setTransitionProgress(progress * 50);
+      currentPlayer.setVolume(100 * (1 - progress));
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+
+    // Start next track
+    nextPlayer.setVolume(0);
+    nextPlayer.playVideo();
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Quick fade in
+    for (let i = 0; i <= steps / 2; i++) {
+      const progress = i / (steps / 2);
+      setTransitionProgress(50 + progress * 50);
+      nextPlayer.setVolume(100 * progress);
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+
+    currentPlayer.pauseVideo();
+    currentPlayer.seekTo(0, true);
+  };
+
+  // Echo Fade: Gradual fade with overlap
+  const executeEchoFade = async (currentPlayer: any, nextPlayer: any, duration: number) => {
+    const steps = 50;
+    const interval = (duration * 1000) / steps;
+
+    // Start next track early at low volume
+    nextPlayer.setVolume(10);
+    nextPlayer.playVideo();
+
+    for (let i = 0; i <= steps; i++) {
+      const progress = i / steps;
+      setTransitionProgress(progress * 100);
+
+      // Exponential fade out for current
+      currentPlayer.setVolume(100 * Math.pow(1 - progress, 2));
+      // Exponential fade in for next
+      nextPlayer.setVolume(100 * Math.pow(progress, 0.5));
+
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+
+    currentPlayer.pauseVideo();
+    currentPlayer.seekTo(0, true);
+  };
+
+  // Filter Sweep: Simulate filter effect with volume curves
+  const executeFilterSweep = async (currentPlayer: any, nextPlayer: any, duration: number) => {
+    const steps = 30;
+    const interval = (duration * 1000) / steps;
+
+    nextPlayer.playVideo();
+
+    for (let i = 0; i <= steps; i++) {
+      const progress = i / steps;
+      setTransitionProgress(progress * 100);
+
+      // Create a "sweep" effect with volume
+      const currentVol = 100 * (1 - progress) * (1 - Math.sin(progress * Math.PI / 2));
+      const nextVol = 100 * progress * Math.sin(progress * Math.PI / 2);
+
+      currentPlayer.setVolume(Math.max(0, currentVol));
+      nextPlayer.setVolume(Math.min(100, nextVol));
+
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+
+    currentPlayer.pauseVideo();
+    currentPlayer.seekTo(0, true);
   };
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
-      {/* Hidden YouTube Player */}
-      <div ref={playerContainerRef} style={{ display: "none" }}></div>
+      {/* Hidden YouTube Players for crossfading */}
+      <div ref={playerAContainerRef} style={{ display: "none" }}></div>
+      <div ref={playerBContainerRef} style={{ display: "none" }}></div>
 
       {/* Left Section: Prompt */}
       <div className="w-64 border-r border-gray-700 flex flex-col p-4">
@@ -552,6 +716,29 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                 </div>
               </div>
 
+              {/* Transition Progress */}
+              {isTransitioning && (
+                <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center flex-shrink-0 animate-pulse">
+                      <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold mb-1">Transitioning...</p>
+                      <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-purple-600 to-pink-600 transition-all duration-300"
+                          style={{ width: `${transitionProgress}%` }}
+                        />
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">{Math.round(transitionProgress)}% complete</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Transition Controls */}
               <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
                 <h3 className="text-sm font-semibold mb-3 text-gray-400">Transition Type</h3>
@@ -573,14 +760,14 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                           {transition.rating}%
                         </span>
                       </div>
-                      {isTransitioning && index === 0 && (
-                        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-                          <span className="text-xs">Mixing...</span>
-                        </div>
-                      )}
                     </button>
                   ))}
                 </div>
+                {!isTransitioning && (
+                  <p className="text-xs text-gray-500 mt-3 text-center">
+                    Click a transition type to mix into the next track
+                  </p>
+                )}
               </div>
 
               {/* Additional Info */}
