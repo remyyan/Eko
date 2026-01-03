@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
-import { checkRateLimit } from "@/lib/rate-limiter";
+import YTMusic from "ytmusic-api";
+import Groq from "groq-sdk";
 
 export async function POST(request: Request) {
   try {
-    const { track } = await request.json();
+    const { track, skipCache, excludedSongs = [] } = await request.json();
     if (!track) {
       return NextResponse.json(
         { error: "Track is required" },
@@ -12,28 +13,27 @@ export async function POST(request: Request) {
       );
     }
 
-    // Check cache first
+    // Check cache first (unless skipCache is true)
     const cacheKey = `recommend-${track.id}`;
-    const cached = getCached(cacheKey);
-    if (cached) {
-      console.log("Returning cached recommendation");
-      return NextResponse.json(cached);
+    if (!skipCache) {
+      const cached = getCached(cacheKey);
+      if (cached) {
+        console.log("Returning cached recommendation");
+        return NextResponse.json(cached);
+      }
+    } else {
+      console.log("Skipping cache, fetching new recommendation");
     }
 
-    // Check rate limit before calling Gemini
-    const rateLimit = checkRateLimit("gemini-recommend");
-    if (!rateLimit.allowed) {
-      console.log(`Rate limit exceeded. Retry after ${rateLimit.retryAfter}s`);
-      return NextResponse.json(
-        { error: `Rate limit exceeded. Please wait ${rateLimit.retryAfter} seconds.` },
-        { status: 429 }
-      );
-    }
+    // Get AI recommendation using Groq (much higher free tier limits!)
+    const groq = new Groq({
+      apiKey: process.env.GROQ_API_KEY,
+    });
 
-    // Get AI recommendation using Gemini
-    const { GoogleGenerativeAI } = await import("@google/generative-ai");
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // Build excluded songs list for prompt
+    const excludedList = excludedSongs.length > 0
+      ? `\n\nDO NOT recommend any of these songs (already suggested):\n${excludedSongs.map((s: any) => `- "${s.name}" by ${s.artist}`).join('\n')}`
+      : '';
 
     const prompt = `You are a professional DJ. A DJ is about to mix "${track.name}" by ${track.artists[0]?.name}.
 
@@ -48,12 +48,26 @@ Recommend a SPECIFIC song that would transition well into this track. Consider:
 2. Compatible musical key
 3. Similar energy level or a good build-up
 4. Same or similar genre
+${excludedList}
+
+${skipCache ? "IMPORTANT: Provide a DIFFERENT recommendation than you might have given before. Be creative and suggest an alternative track that also works well." : ""}
 
 Respond ONLY with JSON (no markdown):
 {"artist": "artist name", "song": "song name", "reason": "brief reason why this transition works"}`;
 
-    const response = await model.generateContent(prompt);
-    const responseText = response.response.text();
+    const response = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      model: "llama-3.3-70b-versatile", // Fast and accurate
+      temperature: skipCache ? 1.0 : 0.7, // Higher temperature for more variety when skipping cache
+      max_tokens: 200,
+    });
+
+    const responseText = response.choices[0]?.message?.content || "";
 
     // Parse JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -63,82 +77,36 @@ Respond ONLY with JSON (no markdown):
 
     const recommendation = JSON.parse(jsonMatch[0]);
 
-    // Search for the recommended track on YouTube
-    const searchQuery = `${recommendation.song} ${recommendation.artist} official audio`;
-    const youtubeApiKey = process.env.YOUTUBE_API_KEY;
+    // Search for the recommended track on YouTube Music
+    const searchQuery = `${recommendation.song} ${recommendation.artist}`;
 
-    if (!youtubeApiKey) {
-      throw new Error("YouTube API key not configured");
-    }
+    const ytmusic = new YTMusic();
+    await ytmusic.initialize();
 
-    const searchResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?` +
-        `part=snippet&type=video&videoCategoryId=10&videoDuration=medium&maxResults=5&q=${encodeURIComponent(searchQuery)}&key=${youtubeApiKey}`
-    );
+    const results = await ytmusic.searchSongs(searchQuery);
+    const song = results?.[0];
 
-    if (!searchResponse.ok) {
-      throw new Error("YouTube search failed");
-    }
-
-    const searchData = await searchResponse.json();
-
-    // Filter and score results to get the best music match
-    const filteredVideos = searchData.items?.filter((item: any) => {
-      const title = item.snippet.title.toLowerCase();
-
-      // Exclude non-music content
-      if (title.includes('#shorts') ||
-          title.includes('live stream') ||
-          title.includes('podcast') ||
-          title.includes('interview') ||
-          title.includes('reaction') ||
-          title.includes('tutorial') ||
-          title.includes('cover') && title.includes('tutorial')) {
-        return false;
-      }
-
-      return true;
-    }) || [];
-
-    // Score results
-    const scoredVideos = filteredVideos.map((item: any) => {
-      const title = item.snippet.title.toLowerCase();
-      const channelTitle = item.snippet.channelTitle.toLowerCase();
-      let score = 0;
-
-      if (title.includes('official')) score += 10;
-      if (title.includes('audio')) score += 8;
-      if (channelTitle.includes('vevo')) score += 15;
-      if (channelTitle.includes('official')) score += 10;
-      if (channelTitle.includes('records')) score += 8;
-
-      return { item, score };
-    });
-
-    // Get the best match
-    const video = scoredVideos.sort((a: any, b: any) => b.score - a.score)[0]?.item;
-
-    if (!video) {
+    if (!song) {
       return NextResponse.json(
-        { error: "Could not find recommended track on YouTube" },
+        { error: "Could not find recommended track on YouTube Music" },
         { status: 404 }
       );
     }
 
     // Get audio features for recommended track
     const featuresResponse = await fetch(
-      `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/youtube/video-details?id=${video.id.videoId}`
+      `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/youtube/video-details?id=${song.videoId}`
     );
 
     const audioFeatures = await featuresResponse.json();
 
     const trackWithFeatures = {
-      id: video.id.videoId,
-      name: video.snippet.title,
-      artists: [{ name: video.snippet.channelTitle }],
+      id: song.videoId,
+      name: song.name,
+      artists: song.artist ? [{ name: song.artist.name }] : [{ name: "Unknown Artist" }],
       album: {
         images: [
-          { url: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.default.url }
+          { url: song.thumbnails?.[0]?.url || "" }
         ],
       },
       audioFeatures,
@@ -156,9 +124,7 @@ Respond ONLY with JSON (no markdown):
   } catch (error) {
     console.error("Recommendation error:", error);
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to get recommendation",
-      },
+      { error: error instanceof Error ? error.message : "Failed to get recommendation" },
       { status: 500 }
     );
   }

@@ -40,6 +40,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionProgress, setTransitionProgress] = useState(0);
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
+  const [selectedTransition, setSelectedTransition] = useState<any | null>(null);
+  const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
   const lastTransitionPairRef = useRef<string>("");
   const playerAContainerRef = useRef<HTMLDivElement>(null);
   const playerBContainerRef = useRef<HTMLDivElement>(null);
@@ -161,6 +163,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       clearInterval(positionIntervalRef.current);
     }
 
+    console.log(`Starting position tracking for player ${activePlayer}`);
+
     positionIntervalRef.current = setInterval(() => {
       try {
         if (player && player.getCurrentTime && isPlaying) {
@@ -177,13 +181,55 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         clearInterval(positionIntervalRef.current);
       }
     };
-  }, [player, playerReady, isPlaying]);
+  }, [player, playerReady, isPlaying, activePlayer]);
+
+  // Function to fetch a new recommendation
+  const fetchNewRecommendation = async (skipCache = false) => {
+    const current = queue[currentIndex];
+    if (!current) return;
+
+    console.log("Fetching AI recommendation for:", current.name);
+    console.log("Excluded songs:", excludedRecommendations.length);
+
+    try {
+      const res = await fetch("/api/mashup/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          track: current,
+          skipCache,
+          excludedSongs: excludedRecommendations
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNextTrack(data.recommendedTrack);
+        setNextReason(data.reason);
+
+        // Add to excluded list if we're skipping cache (getting different recommendation)
+        if (skipCache && data.recommendedTrack) {
+          setExcludedRecommendations(prev => [
+            ...prev,
+            {
+              name: data.recommendedTrack.name,
+              artist: data.recommendedTrack.artists[0]?.name || "Unknown"
+            }
+          ]);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to get next track:", error);
+    }
+  };
 
   // Get next track recommendation (only when current track changes and no next track in queue)
   useEffect(() => {
     const getNextTrack = async () => {
       const current = queue[currentIndex];
       if (!current) return;
+
+      // Reset excluded recommendations when track changes
+      setExcludedRecommendations([]);
 
       // If there's already a next track in the queue, don't fetch AI recommendation
       if (currentIndex < queue.length - 1) {
@@ -193,22 +239,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       }
 
       // Only fetch AI recommendation if we're at the end of the queue
-      console.log("Fetching AI recommendation for:", current.name);
-
-      try {
-        const res = await fetch("/api/mashup/recommend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track: current }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setNextTrack(data.recommendedTrack);
-          setNextReason(data.reason);
-        }
-      } catch (error) {
-        console.error("Failed to get next track:", error);
-      }
+      fetchNewRecommendation(false);
     };
     getNextTrack();
   }, [currentIndex, queue]);
@@ -357,11 +388,23 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     return "bg-red-600";
   };
 
+  const handleTransitionClick = (transition: any) => {
+    // First click: select and show insight
+    if (!selectedTransition || selectedTransition.name !== transition.name) {
+      setSelectedTransition(transition);
+      return;
+    }
+
+    // Second click: execute transition
+    executeTransition(transition);
+  };
+
   const executeTransition = async (transition: any) => {
     if (!nextTrack || !playerA || !playerB || !playersReady.A || !playersReady.B) return;
 
     setIsTransitioning(true);
     setTransitionProgress(0);
+    setSelectedTransition(null); // Clear selection after execution
     console.log(`Executing ${transition.name} transition`);
 
     try {
@@ -421,6 +464,16 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       // Switch active player
       setActivePlayer(activePlayer === 'A' ? 'B' : 'A');
       setDuration(nextPlayer.getDuration() * 1000);
+
+      // Update position to match the new active player
+      try {
+        const currentTime = nextPlayer.getCurrentTime();
+        setPosition(currentTime * 1000);
+        console.log(`Position synced to new player: ${currentTime}s`);
+      } catch (error) {
+        console.error("Failed to get current time:", error);
+        setPosition(0);
+      }
 
       console.log("Transition complete!");
       setIsTransitioning(false);
@@ -647,75 +700,6 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Waveform-style visualization */}
-              <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
-                {/* Current Track Info */}
-                <div className="flex items-center gap-3 mb-4">
-                  {currentTrack?.album?.images?.[0]?.url && (
-                    <img
-                      src={currentTrack.album.images[0].url}
-                      alt={currentTrack.name}
-                      className="w-12 h-12 rounded"
-                    />
-                  )}
-                  <div className="flex-1">
-                    <p className="font-semibold text-sm">{currentTrack?.name}</p>
-                    <p className="text-xs text-gray-400">{currentTrack?.artists[0]?.name}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-gray-400">Current</p>
-                    <p className="text-sm font-semibold">{currentTrack?.audioFeatures?.tempo?.toFixed(0) || "?"} bpm</p>
-                  </div>
-                </div>
-
-                {/* Simple Track Transition Visualization */}
-                <div className="relative h-24 bg-gray-800 rounded mb-4 overflow-hidden flex items-center">
-                  {/* Current track side */}
-                  <div className="flex-1 h-full bg-gradient-to-r from-blue-900 to-blue-700 flex items-center justify-center border-r-2 border-gray-700">
-                    <div className="text-center">
-                      <p className="text-xs text-gray-300 mb-1">Current Track</p>
-                      <p className="text-2xl font-bold text-blue-300">→</p>
-                    </div>
-                  </div>
-
-                  {/* Transition indicator */}
-                  <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
-                    <div className="w-16 h-16 rounded-full bg-gray-900 border-4 border-white flex items-center justify-center">
-                      <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
-                      </svg>
-                    </div>
-                  </div>
-
-                  {/* Next track side */}
-                  <div className="flex-1 h-full bg-gradient-to-l from-green-900 to-green-700 flex items-center justify-center border-l-2 border-gray-700">
-                    <div className="text-center">
-                      <p className="text-xs text-gray-300 mb-1">Next Track</p>
-                      <p className="text-2xl font-bold text-green-300">→</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Next Track Info */}
-                <div className="flex items-center gap-3">
-                  {nextTrack?.album?.images?.[0]?.url && (
-                    <img
-                      src={nextTrack.album.images[0].url}
-                      alt={nextTrack.name}
-                      className="w-12 h-12 rounded"
-                    />
-                  )}
-                  <div className="flex-1">
-                    <p className="font-semibold text-sm">{nextTrack?.name}</p>
-                    <p className="text-xs text-gray-400">{nextTrack?.artists[0]?.name}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-gray-400">Next</p>
-                    <p className="text-sm font-semibold">{nextTrack?.audioFeatures?.tempo?.toFixed(0) || "?"} bpm</p>
-                  </div>
-                </div>
-              </div>
-
               {/* Transition Progress */}
               {isTransitioning && (
                 <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
@@ -743,46 +727,81 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
                 <h3 className="text-sm font-semibold mb-3 text-gray-400">Transition Type</h3>
                 <div className="grid grid-cols-4 gap-2">
-                  {transitionRecommendations.map((transition: any, index: number) => (
-                    <button
-                      key={index}
-                      onClick={() => executeTransition(transition)}
-                      disabled={isTransitioning}
-                      className={`px-4 py-3 rounded-lg text-sm font-medium transition-all relative overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed ${
-                        index === 0
-                          ? 'bg-white text-black hover:bg-gray-200'
-                          : 'bg-gray-800 text-white hover:bg-gray-700 border border-gray-700'
-                      }`}
-                    >
-                      <div className="flex flex-col items-center gap-1">
-                        <span>{transition.name}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${getColorForRating(transition.rating)}`}>
-                          {transition.rating}%
-                        </span>
-                      </div>
-                    </button>
-                  ))}
+                  {transitionRecommendations.map((transition: any, index: number) => {
+                    const isSelected = selectedTransition?.name === transition.name;
+                    const isRecommended = index === 0;
+
+                    return (
+                      <button
+                        key={index}
+                        onClick={() => handleTransitionClick(transition)}
+                        disabled={isTransitioning}
+                        className={`px-4 py-3 rounded-lg text-sm font-medium transition-all relative overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed ${
+                          isSelected
+                            ? 'bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-gray-900'
+                            : isRecommended
+                            ? 'bg-white text-black hover:bg-gray-200'
+                            : 'bg-gray-800 text-white hover:bg-gray-700 border border-gray-700'
+                        }`}
+                      >
+                        <div className="flex flex-col items-center gap-1">
+                          <span>{transition.name}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${getColorForRating(transition.rating)}`}>
+                            {transition.rating}%
+                          </span>
+                        </div>
+                        {isSelected && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-blue-600/90 text-white text-xs font-bold">
+                            Click to Execute
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
-                {!isTransitioning && (
+                {!isTransitioning && !selectedTransition && (
                   <p className="text-xs text-gray-500 mt-3 text-center">
-                    Click a transition type to mix into the next track
+                    Click a transition type to see AI insight, click again to execute
                   </p>
                 )}
               </div>
 
-              {/* Additional Info */}
+              {/* AI Insight */}
               {transitionRecommendations.length > 0 && (
-                <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
+                <div className={`rounded-lg p-4 border transition-all ${
+                  selectedTransition
+                    ? 'bg-blue-900 border-blue-600'
+                    : 'bg-gray-900 border-gray-800'
+                }`}>
                   <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      selectedTransition ? 'bg-blue-500' : 'bg-blue-600'
+                    }`}>
                       <span className="text-xs font-bold">AI</span>
                     </div>
                     <div className="flex-1">
-                      <p className="text-sm font-semibold mb-1">Recommended: {transitionRecommendations[0]?.name}</p>
-                      <p className="text-xs text-gray-400">{transitionRecommendations[0]?.reason}</p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        Transition starts {transitionRecommendations[0]?.startTime}s before current track ends
-                      </p>
+                      {selectedTransition ? (
+                        <>
+                          <p className="text-sm font-semibold mb-1 text-white">
+                            Selected: {selectedTransition.name}
+                          </p>
+                          <p className="text-xs text-blue-200">{selectedTransition.reason}</p>
+                          <p className="text-xs text-blue-300 mt-1">
+                            Transition starts {selectedTransition.startTime}s before current track ends
+                          </p>
+                          <p className="text-xs text-blue-100 mt-2 font-semibold">
+                            💡 Click the button again to execute this transition
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-semibold mb-1">Recommended: {transitionRecommendations[0]?.name}</p>
+                          <p className="text-xs text-gray-400">{transitionRecommendations[0]?.reason}</p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Transition starts {transitionRecommendations[0]?.startTime}s before current track ends
+                          </p>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -873,6 +892,12 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                   Play Next
                 </button>
               </div>
+              <button
+                onClick={() => fetchNewRecommendation(true)}
+                className="w-full mt-2 bg-gray-800 text-white px-3 py-2 text-sm font-medium hover:bg-gray-700 border border-gray-600"
+              >
+                🔄 Get Different Recommendation
+              </button>
             </div>
           )}
         </div>

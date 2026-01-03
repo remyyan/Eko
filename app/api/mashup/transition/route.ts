@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
-import { checkRateLimit } from "@/lib/rate-limiter";
+import Groq from "groq-sdk";
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,18 +21,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(cached);
     }
 
-    // Check rate limit before calling Gemini
-    const rateLimit = checkRateLimit("gemini-transition");
-    if (!rateLimit.allowed) {
-      console.log(`Rate limit exceeded, using fallback. Retry after ${rateLimit.retryAfter}s`);
-      const analysis = generateBasicTransitionAnalysis(currentTrack, nextTrack);
-      setCache(cacheKey, analysis);
-      return NextResponse.json(analysis);
-    }
-
-    const { GoogleGenerativeAI } = await import("@google/generative-ai");
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // Use Groq for AI analysis (much higher free tier limits!)
+    const groq = new Groq({
+      apiKey: process.env.GROQ_API_KEY,
+    });
 
     const prompt = `You are a professional DJ analyzing a transition between two tracks.
 
@@ -93,17 +85,26 @@ Respond ONLY with JSON (no markdown):
     let analysis;
 
     try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const result = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.7,
+        max_tokens: 500,
+      });
+
+      const text = result.choices[0]?.message?.content || "";
 
       // Remove markdown code blocks if present
       const cleanText = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       analysis = JSON.parse(cleanText);
     } catch (aiError: any) {
-      console.error("Gemini API error:", aiError);
-
-      // Fallback to basic analysis if AI fails (rate limit, etc.)
-      analysis = generateBasicTransitionAnalysis(currentTrack, nextTrack);
+      console.error("Groq API error:", aiError);
+      throw aiError;
     }
 
     // Cache the result
@@ -117,57 +118,5 @@ Respond ONLY with JSON (no markdown):
       { status: 500 }
     );
   }
-}
-
-// Fallback function for basic transition analysis
-function generateBasicTransitionAnalysis(currentTrack: any, nextTrack: any) {
-  const currentBPM = currentTrack.audioFeatures?.tempo || 120;
-  const nextBPM = nextTrack.audioFeatures?.tempo || 120;
-  const bpmDiff = Math.abs(currentBPM - nextBPM);
-
-  const currentEnergy = currentTrack.audioFeatures?.energy || 0.5;
-  const nextEnergy = nextTrack.audioFeatures?.energy || 0.5;
-  const energyDiff = Math.abs(currentEnergy - nextEnergy);
-
-  // Calculate ratings based on compatibility
-  const crossfadeRating = Math.max(40, 100 - (energyDiff * 100));
-  const beatMatchRating = Math.max(30, 100 - (bpmDiff * 2));
-  const echoFadeRating = Math.max(50, 80 - (energyDiff * 50));
-  const filterSweepRating = Math.max(45, 90 - (bpmDiff * 1.5));
-
-  const transitions = [
-    {
-      name: "Crossfade",
-      rating: Math.round(crossfadeRating),
-      startTime: 15,
-      reason: energyDiff < 0.2 ? "Similar energy levels make for smooth crossfade" : "Energy difference requires careful mixing"
-    },
-    {
-      name: "Beat Match",
-      rating: Math.round(beatMatchRating),
-      startTime: 20,
-      reason: bpmDiff < 5 ? "BPM is very close, perfect for beat matching" : `BPM difference of ${Math.round(bpmDiff)} requires adjustment`
-    },
-    {
-      name: "Echo Fade",
-      rating: Math.round(echoFadeRating),
-      startTime: 12,
-      reason: "Echo effects can help blend different energy levels"
-    },
-    {
-      name: "Filter Sweep",
-      rating: Math.round(filterSweepRating),
-      startTime: 18,
-      reason: "Filter sweep works well for building tension"
-    }
-  ];
-
-  // Sort by rating and get recommended
-  transitions.sort((a, b) => b.rating - a.rating);
-
-  return {
-    transitions,
-    recommended: transitions[0].name
-  };
 }
 
