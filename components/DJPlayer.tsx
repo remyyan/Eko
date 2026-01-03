@@ -36,7 +36,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [duration, setDuration] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
-  const transitionTriggeredRef = useRef(false);
+  const lastTransitionPairRef = useRef<string>("");
 
   const currentTrack = queue[currentIndex];
 
@@ -77,6 +77,23 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         setDuration(state.duration);
       });
 
+      // Error listeners
+      playerInstance.addListener("initialization_error", ({ message }: any) => {
+        console.error("Spotify Player initialization error:", message);
+      });
+
+      playerInstance.addListener("authentication_error", ({ message }: any) => {
+        console.error("Spotify Player authentication error:", message);
+      });
+
+      playerInstance.addListener("account_error", ({ message }: any) => {
+        console.error("Spotify Player account error:", message);
+      });
+
+      playerInstance.addListener("playback_error", ({ message }: any) => {
+        console.error("Spotify Player playback error:", message);
+      });
+
       setPlayer(playerInstance);
       playerInstance.connect();
     };
@@ -88,56 +105,47 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     };
   }, [session?.accessToken]);
 
-  // Update position regularly while playing and handle auto-transition
+  // Update position regularly while playing
   useEffect(() => {
     if (!player) return;
 
     const interval = setInterval(async () => {
-      const state = await player.getCurrentState();
-      if (state) {
-        setPosition(state.position);
-        setDuration(state.duration);
-        setIsPlaying(!state.paused);
-
-        // Check if song is ending (within 2 seconds of end) and is playing
-        const timeRemaining = state.duration - state.position;
-        if (!state.paused && timeRemaining <= 2000 && timeRemaining > 0 && !transitionTriggeredRef.current) {
-          transitionTriggeredRef.current = true;
-          console.log("Auto-transitioning to next track...");
-
-          // Auto-advance to next track
-          if (currentIndex < queue.length - 1) {
-            // Move to next track in queue
-            const nextIdx = currentIndex + 1;
-            setCurrentIndex(nextIdx);
-            playTrack(queue[nextIdx]);
-          } else if (nextTrack) {
-            // If at end of queue, add next track and play it
-            setQueue(prevQueue => [...prevQueue, nextTrack]);
-            setCurrentIndex(prevIdx => prevIdx + 1);
-            playTrack(nextTrack);
-          }
+      try {
+        const state = await player.getCurrentState();
+        if (state) {
+          setPosition(state.position);
+          setDuration(state.duration);
+          setIsPlaying(!state.paused);
         }
-
-        // Reset transition flag when there's more than 5 seconds left
-        if (timeRemaining > 5000) {
-          transitionTriggeredRef.current = false;
-        }
+      } catch (error) {
+        // Silently ignore errors - player might not be ready yet
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [player, currentIndex, queue, nextTrack]);
+  }, [player]);
 
-  // Get next track recommendation
+  // Get next track recommendation (only when current track changes and no next track in queue)
   useEffect(() => {
     const getNextTrack = async () => {
-      if (!queue[currentIndex]) return;
+      const current = queue[currentIndex];
+      if (!current) return;
+
+      // If there's already a next track in the queue, don't fetch AI recommendation
+      if (currentIndex < queue.length - 1) {
+        setNextTrack(queue[currentIndex + 1]);
+        setNextReason("Next in queue");
+        return;
+      }
+
+      // Only fetch AI recommendation if we're at the end of the queue
+      console.log("Fetching AI recommendation for:", current.name);
+
       try {
         const res = await fetch("/api/mashup/recommend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track: queue[currentIndex] }),
+          body: JSON.stringify({ track: current }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -151,10 +159,24 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     getNextTrack();
   }, [currentIndex, queue]);
 
-  // Get transition recommendations when we have both tracks
+  // Get transition recommendations when we have both tracks (only once per pair)
   useEffect(() => {
     const getTransitionRecommendations = async () => {
-      if (!currentTrack || !nextTrack) return;
+      if (!currentTrack || !nextTrack) {
+        setTransitionRecommendations([]);
+        return;
+      }
+
+      // Create a unique key for this track pair
+      const pairKey = `${currentTrack.id}-${nextTrack.id}`;
+
+      // Skip if we already fetched recommendations for this pair
+      if (lastTransitionPairRef.current === pairKey) {
+        return;
+      }
+
+      console.log("Fetching transition recommendations for:", currentTrack.name, "→", nextTrack.name);
+      lastTransitionPairRef.current = pairKey;
 
       try {
         const response = await fetch("/api/mashup/transition", {
@@ -202,19 +224,26 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   };
 
   const togglePlayPause = async () => {
-    if (!player || !deviceId) return;
+    if (!player || !deviceId) {
+      console.error("Player or device not ready", { player: !!player, deviceId });
+      return;
+    }
 
     try {
       const state = await player.getCurrentState();
+      console.log("Current player state:", state);
 
       if (!state) {
         // No track loaded, play current track
+        console.log("No state, playing current track:", currentTrack?.name);
         await playTrack(currentTrack);
       } else if (state.paused) {
         // Track is paused, resume it
+        console.log("Resuming playback");
         await player.resume();
       } else {
         // Track is playing, pause it
+        console.log("Pausing playback");
         await player.pause();
       }
     } catch (error) {
@@ -286,6 +315,75 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     if (rating >= 60) return "bg-yellow-600";
     if (rating >= 40) return "bg-orange-600";
     return "bg-red-600";
+  };
+
+  const executeTransition = async (transition: any) => {
+    if (!nextTrack || !player || !deviceId) return;
+
+    setIsTransitioning(true);
+    console.log(`Executing ${transition.name} transition`);
+
+    try {
+      // Calculate transition start time
+      const transitionStartTime = duration - (transition.startTime * 1000);
+
+      // Seek to transition point if not already there
+      if (position < transitionStartTime - 1000) {
+        console.log(`Seeking to ${transition.startTime}s before end`);
+        await player.seek(transitionStartTime);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Quick fade out over 2 seconds
+      console.log("Fading out current track...");
+      const fadeSteps = 20;
+      const fadeInterval = 100; // 100ms per step = 2 seconds total
+
+      for (let i = 0; i <= fadeSteps; i++) {
+        const volume = 0.7 * (1 - (i / fadeSteps));
+        await player.setVolume(volume);
+        await new Promise(resolve => setTimeout(resolve, fadeInterval));
+      }
+
+      // Determine which track to play next
+      let trackToPlay = nextTrack;
+      if (currentIndex < queue.length - 1) {
+        const nextIdx = currentIndex + 1;
+        setCurrentIndex(nextIdx);
+        trackToPlay = queue[nextIdx];
+      } else {
+        setQueue(prevQueue => [...prevQueue, nextTrack]);
+        setCurrentIndex(prevIdx => prevIdx + 1);
+      }
+
+      // Start next track at low volume
+      console.log("Starting next track:", trackToPlay.name);
+      await player.setVolume(0);
+      await playTrack(trackToPlay);
+
+      // Wait for track to start
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // Quick fade in over 2 seconds
+      console.log("Fading in next track...");
+      for (let i = 0; i <= fadeSteps; i++) {
+        const volume = 0.7 * (i / fadeSteps);
+        await player.setVolume(volume);
+        await new Promise(resolve => setTimeout(resolve, fadeInterval));
+      }
+
+      console.log("Transition complete!");
+      setIsTransitioning(false);
+    } catch (error) {
+      console.error("Transition failed:", error);
+      // Reset volume
+      try {
+        await player.setVolume(0.7);
+      } catch (e) {
+        // Ignore
+      }
+      setIsTransitioning(false);
+    }
   };
 
   return (
@@ -381,43 +479,133 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           </div>
         </div>
 
-        {/* Bottom: Transition/Remix Hub */}
-        <div className="flex-1 p-6 overflow-y-auto">
-          <h2 className="text-xl font-bold mb-4">Transition/Remix Hub</h2>
-          {transitionRecommendations.length === 0 ? (
+        {/* Bottom: Spotify Mix-Style Transition Interface */}
+        <div className="flex-1 p-6 overflow-y-auto bg-gray-950">
+          <h2 className="text-xl font-bold mb-4">Mix Transition</h2>
+
+          {!nextTrack ? (
             <div className="text-center text-gray-400 py-12">
-              <p className="mb-2">AI analyzing transition options...</p>
-              <p className="text-sm">Add a track to the queue to see recommendations</p>
+              <p className="mb-2">Add a track to the queue to see mix options</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
-              {transitionRecommendations.map((transition: any, index: number) => (
-                <button
-                  key={index}
-                  className="bg-gray-800 border-2 border-gray-700 p-5 text-left hover:border-gray-600 rounded-lg transition-all relative overflow-hidden"
-                >
-                  {/* Color-coded rating bar */}
-                  <div
-                    className={`absolute top-0 left-0 h-1 ${getColorForRating(transition.rating)}`}
-                    style={{ width: `${transition.rating}%` }}
-                  />
+            <div className="space-y-4">
+              {/* Waveform-style visualization */}
+              <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
+                {/* Current Track Info */}
+                <div className="flex items-center gap-3 mb-4">
+                  {currentTrack?.album?.images?.[0]?.url && (
+                    <img
+                      src={currentTrack.album.images[0].url}
+                      alt={currentTrack.name}
+                      className="w-12 h-12 rounded"
+                    />
+                  )}
+                  <div className="flex-1">
+                    <p className="font-semibold text-sm">{currentTrack?.name}</p>
+                    <p className="text-xs text-gray-400">{currentTrack?.artists[0]?.name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-gray-400">Current</p>
+                    <p className="text-sm font-semibold">{currentTrack?.audioFeatures?.tempo?.toFixed(0) || "?"} bpm</p>
+                  </div>
+                </div>
 
-                  <div className="flex items-start justify-between mb-2">
-                    <h3 className="font-semibold text-lg">{transition.name}</h3>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold px-2 py-1 rounded ${getColorForRating(transition.rating)} text-white`}>
-                        {transition.rating}%
-                      </span>
+                {/* Simple Track Transition Visualization */}
+                <div className="relative h-24 bg-gray-800 rounded mb-4 overflow-hidden flex items-center">
+                  {/* Current track side */}
+                  <div className="flex-1 h-full bg-gradient-to-r from-blue-900 to-blue-700 flex items-center justify-center border-r-2 border-gray-700">
+                    <div className="text-center">
+                      <p className="text-xs text-gray-300 mb-1">Current Track</p>
+                      <p className="text-2xl font-bold text-blue-300">→</p>
                     </div>
                   </div>
 
-                  <p className="text-xs text-gray-400 mb-2">
-                    Start: {transition.startTime}s before end
-                  </p>
+                  {/* Transition indicator */}
+                  <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
+                    <div className="w-16 h-16 rounded-full bg-gray-900 border-4 border-white flex items-center justify-center">
+                      <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                      </svg>
+                    </div>
+                  </div>
 
-                  <p className="text-sm text-gray-300">{transition.reason}</p>
-                </button>
-              ))}
+                  {/* Next track side */}
+                  <div className="flex-1 h-full bg-gradient-to-l from-green-900 to-green-700 flex items-center justify-center border-l-2 border-gray-700">
+                    <div className="text-center">
+                      <p className="text-xs text-gray-300 mb-1">Next Track</p>
+                      <p className="text-2xl font-bold text-green-300">→</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Next Track Info */}
+                <div className="flex items-center gap-3">
+                  {nextTrack?.album?.images?.[0]?.url && (
+                    <img
+                      src={nextTrack.album.images[0].url}
+                      alt={nextTrack.name}
+                      className="w-12 h-12 rounded"
+                    />
+                  )}
+                  <div className="flex-1">
+                    <p className="font-semibold text-sm">{nextTrack?.name}</p>
+                    <p className="text-xs text-gray-400">{nextTrack?.artists[0]?.name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-gray-400">Next</p>
+                    <p className="text-sm font-semibold">{nextTrack?.audioFeatures?.tempo?.toFixed(0) || "?"} bpm</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Transition Controls */}
+              <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
+                <h3 className="text-sm font-semibold mb-3 text-gray-400">Transition Type</h3>
+                <div className="grid grid-cols-4 gap-2">
+                  {transitionRecommendations.map((transition: any, index: number) => (
+                    <button
+                      key={index}
+                      onClick={() => executeTransition(transition)}
+                      disabled={isTransitioning}
+                      className={`px-4 py-3 rounded-lg text-sm font-medium transition-all relative overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed ${
+                        index === 0
+                          ? 'bg-white text-black hover:bg-gray-200'
+                          : 'bg-gray-800 text-white hover:bg-gray-700 border border-gray-700'
+                      }`}
+                    >
+                      <div className="flex flex-col items-center gap-1">
+                        <span>{transition.name}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${getColorForRating(transition.rating)}`}>
+                          {transition.rating}%
+                        </span>
+                      </div>
+                      {isTransitioning && index === 0 && (
+                        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+                          <span className="text-xs">Mixing...</span>
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Additional Info */}
+              {transitionRecommendations.length > 0 && (
+                <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                      <span className="text-xs font-bold">AI</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold mb-1">Recommended: {transitionRecommendations[0]?.name}</p>
+                      <p className="text-xs text-gray-400">{transitionRecommendations[0]?.reason}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Transition starts {transitionRecommendations[0]?.startTime}s before current track ends
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
