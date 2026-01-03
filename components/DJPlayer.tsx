@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useSession } from "next-auth/react";
 
 interface Track {
   id: string;
@@ -18,18 +17,17 @@ interface DJPlayerProps {
 
 declare global {
   interface Window {
-    onSpotifyWebPlaybackSDKReady?: () => void;
-    Spotify?: any;
+    onYouTubeIframeAPIReady?: () => void;
+    YT?: any;
   }
 }
 
 export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
-  const { data: session } = useSession();
   const [queue, setQueue] = useState<Track[]>([initialTrack]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [player, setPlayer] = useState<any>(null);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [playerReady, setPlayerReady] = useState(false);
   const [nextTrack, setNextTrack] = useState<Track | null>(null);
   const [nextReason, setNextReason] = useState<string>("");
   const [position, setPosition] = useState(0);
@@ -37,93 +35,100 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
   const lastTransitionPairRef = useRef<string>("");
+  const playerContainerRef = useRef<HTMLDivElement>(null);
+  const positionIntervalRef = useRef<any>(null);
 
   const currentTrack = queue[currentIndex];
 
-  // Load Spotify Web Playback SDK
+  // Load YouTube IFrame API
   useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://sdk.scdn.co/spotify-player.js";
-    script.async = true;
-    document.body.appendChild(script);
+    // Load YouTube IFrame API
+    if (!window.YT) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName("script")[0];
+      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    }
 
-    window.onSpotifyWebPlaybackSDKReady = () => {
-      if (!session?.accessToken) return;
+    window.onYouTubeIframeAPIReady = () => {
+      if (!playerContainerRef.current) return;
 
-      const playerInstance = new window.Spotify.Player({
-        name: "DJ Live Mix",
-        getOAuthToken: (cb: (token: string) => void) => {
-          cb(session.accessToken!);
+      const playerInstance = new window.YT.Player(playerContainerRef.current, {
+        height: "0",
+        width: "0",
+        videoId: initialTrack.id,
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          modestbranding: 1,
         },
-        volume: 0.7,
+        events: {
+          onReady: (event: any) => {
+            console.log("YouTube player ready");
+            setPlayer(event.target);
+            setPlayerReady(true);
+            setDuration(event.target.getDuration() * 1000);
+          },
+          onStateChange: (event: any) => {
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              setIsPlaying(true);
+              setDuration(event.target.getDuration() * 1000);
+            } else if (event.data === window.YT.PlayerState.PAUSED) {
+              setIsPlaying(false);
+            } else if (event.data === window.YT.PlayerState.ENDED) {
+              // Auto-play next track
+              skipToNext();
+            }
+          },
+          onError: (event: any) => {
+            console.error("YouTube player error:", event.data);
+          },
+        },
       });
-
-      // Player is ready
-      playerInstance.addListener("ready", ({ device_id }: { device_id: string }) => {
-        console.log("Ready with Device ID", device_id);
-        setDeviceId(device_id);
-      });
-
-      // Player not ready
-      playerInstance.addListener("not_ready", ({ device_id }: { device_id: string }) => {
-        console.log("Device ID has gone offline", device_id);
-      });
-
-      // Player state changed
-      playerInstance.addListener("player_state_changed", (state: any) => {
-        if (!state) return;
-        setIsPlaying(!state.paused);
-        setPosition(state.position);
-        setDuration(state.duration);
-      });
-
-      // Error listeners
-      playerInstance.addListener("initialization_error", ({ message }: any) => {
-        console.error("Spotify Player initialization error:", message);
-      });
-
-      playerInstance.addListener("authentication_error", ({ message }: any) => {
-        console.error("Spotify Player authentication error:", message);
-      });
-
-      playerInstance.addListener("account_error", ({ message }: any) => {
-        console.error("Spotify Player account error:", message);
-      });
-
-      playerInstance.addListener("playback_error", ({ message }: any) => {
-        console.error("Spotify Player playback error:", message);
-      });
-
-      setPlayer(playerInstance);
-      playerInstance.connect();
     };
+
+    // If YT is already loaded, initialize player
+    if (window.YT && window.YT.Player) {
+      window.onYouTubeIframeAPIReady();
+    }
 
     return () => {
-      if (player) {
-        player.disconnect();
+      if (player && player.destroy) {
+        player.destroy();
+      }
+      if (positionIntervalRef.current) {
+        clearInterval(positionIntervalRef.current);
       }
     };
-  }, [session?.accessToken]);
+  }, []);
 
   // Update position regularly while playing
   useEffect(() => {
-    if (!player) return;
+    if (!player || !playerReady) return;
 
-    const interval = setInterval(async () => {
+    if (positionIntervalRef.current) {
+      clearInterval(positionIntervalRef.current);
+    }
+
+    positionIntervalRef.current = setInterval(() => {
       try {
-        const state = await player.getCurrentState();
-        if (state) {
-          setPosition(state.position);
-          setDuration(state.duration);
-          setIsPlaying(!state.paused);
+        if (player && player.getCurrentTime && isPlaying) {
+          const currentTime = player.getCurrentTime();
+          setPosition(currentTime * 1000);
         }
       } catch (error) {
         // Silently ignore errors - player might not be ready yet
       }
-    }, 1000);
+    }, 100);
 
-    return () => clearInterval(interval);
-  }, [player]);
+    return () => {
+      if (positionIntervalRef.current) {
+        clearInterval(positionIntervalRef.current);
+      }
+    };
+  }, [player, playerReady, isPlaying]);
 
   // Get next track recommendation (only when current track changes and no next track in queue)
   useEffect(() => {
@@ -198,53 +203,39 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   }, [currentTrack, nextTrack]);
 
   const playTrack = async (track: Track) => {
-    if (!player || !deviceId) {
-      console.error("Player or device not ready");
+    if (!player || !playerReady) {
+      console.error("Player not ready");
       return;
     }
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${session?.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ uris: [`spotify:track:${track.id}`] }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        console.error("Failed to play track:", error);
-        alert(`Failed to play track: ${error.error?.message || 'Unknown error'}`);
-      }
+      console.log("Loading video:", track.id);
+      player.loadVideoById(track.id);
+      player.playVideo();
+      setDuration(player.getDuration() * 1000);
     } catch (error) {
       console.error("Failed to play track:", error);
-      alert("Failed to play track. Make sure you have Spotify Premium.");
+      alert("Failed to play track.");
     }
   };
 
   const togglePlayPause = async () => {
-    if (!player || !deviceId) {
-      console.error("Player or device not ready", { player: !!player, deviceId });
+    if (!player || !playerReady) {
+      console.error("Player not ready", { player: !!player, playerReady });
       return;
     }
 
     try {
-      const state = await player.getCurrentState();
-      console.log("Current player state:", state);
+      const playerState = player.getPlayerState();
+      console.log("Current player state:", playerState);
 
-      if (!state) {
-        // No track loaded, play current track
-        console.log("No state, playing current track:", currentTrack?.name);
-        await playTrack(currentTrack);
-      } else if (state.paused) {
-        // Track is paused, resume it
-        console.log("Resuming playback");
-        await player.resume();
-      } else {
+      if (playerState === window.YT.PlayerState.PLAYING) {
         // Track is playing, pause it
         console.log("Pausing playback");
-        await player.pause();
+        player.pauseVideo();
+      } else {
+        // Track is paused or not started, play it
+        console.log("Resuming/starting playback");
+        player.playVideo();
       }
     } catch (error) {
       console.error("Toggle play/pause failed:", error);
@@ -255,8 +246,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     if (!player) return;
 
     try {
-      await player.pause();
-      await player.seek(0);
+      player.pauseVideo();
+      player.seekTo(0, true);
       setPosition(0);
       setIsPlaying(false);
     } catch (error) {
@@ -294,9 +285,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   };
 
   const seek = async (positionMs: number) => {
-    if (!player) return;
+    if (!player || !playerReady) return;
     try {
-      await player.seek(positionMs);
+      player.seekTo(positionMs / 1000, true);
       setPosition(positionMs);
     } catch (error) {
       console.error("Seek failed:", error);
@@ -318,7 +309,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   };
 
   const executeTransition = async (transition: any) => {
-    if (!nextTrack || !player || !deviceId) return;
+    if (!nextTrack || !player || !playerReady) return;
 
     setIsTransitioning(true);
     console.log(`Executing ${transition.name} transition`);
@@ -330,7 +321,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       // Seek to transition point if not already there
       if (position < transitionStartTime - 1000) {
         console.log(`Seeking to ${transition.startTime}s before end`);
-        await player.seek(transitionStartTime);
+        player.seekTo(transitionStartTime / 1000, true);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -340,8 +331,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       const fadeInterval = 100; // 100ms per step = 2 seconds total
 
       for (let i = 0; i <= fadeSteps; i++) {
-        const volume = 0.7 * (1 - (i / fadeSteps));
-        await player.setVolume(volume);
+        const volume = 100 * (1 - (i / fadeSteps));
+        player.setVolume(volume);
         await new Promise(resolve => setTimeout(resolve, fadeInterval));
       }
 
@@ -358,7 +349,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
       // Start next track at low volume
       console.log("Starting next track:", trackToPlay.name);
-      await player.setVolume(0);
+      player.setVolume(0);
       await playTrack(trackToPlay);
 
       // Wait for track to start
@@ -367,8 +358,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       // Quick fade in over 2 seconds
       console.log("Fading in next track...");
       for (let i = 0; i <= fadeSteps; i++) {
-        const volume = 0.7 * (i / fadeSteps);
-        await player.setVolume(volume);
+        const volume = 100 * (i / fadeSteps);
+        player.setVolume(volume);
         await new Promise(resolve => setTimeout(resolve, fadeInterval));
       }
 
@@ -378,7 +369,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       console.error("Transition failed:", error);
       // Reset volume
       try {
-        await player.setVolume(0.7);
+        player.setVolume(100);
       } catch (e) {
         // Ignore
       }
@@ -388,6 +379,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
+      {/* Hidden YouTube Player */}
+      <div ref={playerContainerRef} style={{ display: "none" }}></div>
+
       {/* Left Section: Prompt */}
       <div className="w-64 border-r border-gray-700 flex flex-col p-4">
         <h2 className="text-lg font-bold mb-4">Prompt</h2>
@@ -424,7 +418,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             <div className="flex items-center gap-3 mb-4">
               <button
                 onClick={togglePlayPause}
-                disabled={!deviceId}
+                disabled={!playerReady}
                 className="bg-white text-black px-6 py-2 font-semibold hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded"
               >
                 {isPlaying ? "Pause" : "Play"}
@@ -445,7 +439,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               >
                 Stop
               </button>
-              {!deviceId && (
+              {!playerReady && (
                 <span className="text-sm text-gray-400">Initializing...</span>
               )}
               {isTransitioning && (

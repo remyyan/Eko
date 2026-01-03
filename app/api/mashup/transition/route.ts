@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getCached, setCache } from "@/lib/cache";
+import { checkRateLimit } from "@/lib/rate-limiter";
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,6 +11,23 @@ export async function POST(request: NextRequest) {
         { error: "Both current and next track are required" },
         { status: 400 }
       );
+    }
+
+    // Check cache first
+    const cacheKey = `transition-${currentTrack.id}-${nextTrack.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      console.log("Returning cached transition analysis");
+      return NextResponse.json(cached);
+    }
+
+    // Check rate limit before calling Gemini
+    const rateLimit = checkRateLimit("gemini-transition");
+    if (!rateLimit.allowed) {
+      console.log(`Rate limit exceeded, using fallback. Retry after ${rateLimit.retryAfter}s`);
+      const analysis = generateBasicTransitionAnalysis(currentTrack, nextTrack);
+      setCache(cacheKey, analysis);
+      return NextResponse.json(analysis);
     }
 
     const { GoogleGenerativeAI } = await import("@google/generative-ai");
@@ -71,12 +90,24 @@ Respond ONLY with JSON (no markdown):
   "recommended": "Crossfade"
 }`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    
-    // Remove markdown code blocks if present
-    const cleanText = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const analysis = JSON.parse(cleanText);
+    let analysis;
+
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+
+      // Remove markdown code blocks if present
+      const cleanText = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      analysis = JSON.parse(cleanText);
+    } catch (aiError: any) {
+      console.error("Gemini API error:", aiError);
+
+      // Fallback to basic analysis if AI fails (rate limit, etc.)
+      analysis = generateBasicTransitionAnalysis(currentTrack, nextTrack);
+    }
+
+    // Cache the result
+    setCache(cacheKey, analysis);
 
     return NextResponse.json(analysis);
   } catch (error) {
@@ -86,5 +117,57 @@ Respond ONLY with JSON (no markdown):
       { status: 500 }
     );
   }
+}
+
+// Fallback function for basic transition analysis
+function generateBasicTransitionAnalysis(currentTrack: any, nextTrack: any) {
+  const currentBPM = currentTrack.audioFeatures?.tempo || 120;
+  const nextBPM = nextTrack.audioFeatures?.tempo || 120;
+  const bpmDiff = Math.abs(currentBPM - nextBPM);
+
+  const currentEnergy = currentTrack.audioFeatures?.energy || 0.5;
+  const nextEnergy = nextTrack.audioFeatures?.energy || 0.5;
+  const energyDiff = Math.abs(currentEnergy - nextEnergy);
+
+  // Calculate ratings based on compatibility
+  const crossfadeRating = Math.max(40, 100 - (energyDiff * 100));
+  const beatMatchRating = Math.max(30, 100 - (bpmDiff * 2));
+  const echoFadeRating = Math.max(50, 80 - (energyDiff * 50));
+  const filterSweepRating = Math.max(45, 90 - (bpmDiff * 1.5));
+
+  const transitions = [
+    {
+      name: "Crossfade",
+      rating: Math.round(crossfadeRating),
+      startTime: 15,
+      reason: energyDiff < 0.2 ? "Similar energy levels make for smooth crossfade" : "Energy difference requires careful mixing"
+    },
+    {
+      name: "Beat Match",
+      rating: Math.round(beatMatchRating),
+      startTime: 20,
+      reason: bpmDiff < 5 ? "BPM is very close, perfect for beat matching" : `BPM difference of ${Math.round(bpmDiff)} requires adjustment`
+    },
+    {
+      name: "Echo Fade",
+      rating: Math.round(echoFadeRating),
+      startTime: 12,
+      reason: "Echo effects can help blend different energy levels"
+    },
+    {
+      name: "Filter Sweep",
+      rating: Math.round(filterSweepRating),
+      startTime: 18,
+      reason: "Filter sweep works well for building tension"
+    }
+  ];
+
+  // Sort by rating and get recommended
+  transitions.sort((a, b) => b.rating - a.rating);
+
+  return {
+    transitions,
+    recommended: transitions[0].name
+  };
 }
 

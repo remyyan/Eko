@@ -30,7 +30,7 @@ export default function Home() {
     setLoading(true);
     try {
       const response = await fetch(
-        `/api/spotify/search?q=${encodeURIComponent(searchQuery)}`
+        `/api/youtube/search?q=${encodeURIComponent(searchQuery)}`
       );
       const data = await response.json();
       setSearchResults(data.tracks?.items || []);
@@ -44,7 +44,7 @@ export default function Home() {
     setLoading(true);
     try {
       const response = await fetch(
-        `/api/spotify/audio-features?id=${track.id}`
+        `/api/youtube/video-details?id=${track.id}`
       );
 
       if (!response.ok) {
@@ -77,26 +77,27 @@ export default function Home() {
     );
   }
 
-  if (!session) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-black text-white">
-        <div className="text-center">
-          <h1 className="mb-4 text-4xl font-bold">
-            DJ Mix Assistant
-          </h1>
-          <p className="mb-8 text-gray-400">
-            AI-powered tool to find perfect song combinations
-          </p>
-          <button
-            onClick={() => signIn("spotify")}
-            className="bg-white text-black px-8 py-3 font-semibold hover:bg-gray-200"
-          >
-            Connect with Spotify
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // No authentication needed for YouTube
+  // if (!session) {
+  //   return (
+  //     <div className="flex min-h-screen items-center justify-center bg-black text-white">
+  //       <div className="text-center">
+  //         <h1 className="mb-4 text-4xl font-bold">
+  //           DJ Mix Assistant
+  //         </h1>
+  //         <p className="mb-8 text-gray-400">
+  //           AI-powered tool to find perfect song combinations
+  //         </p>
+  //         <button
+  //           onClick={() => signIn("spotify")}
+  //           className="bg-white text-black px-8 py-3 font-semibold hover:bg-gray-200"
+  //         >
+  //           Connect with Spotify
+  //         </button>
+  //       </div>
+  //     </div>
+  //   );
+  // }
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -111,12 +112,14 @@ export default function Home() {
                 <h1 className="text-3xl font-bold">
                   DJ Mix Assistant
                 </h1>
-                <button
-                  onClick={() => signOut()}
-                  className="bg-gray-800 px-4 py-2 hover:bg-gray-700"
-                >
-                  Sign Out
-                </button>
+                {session && (
+                  <button
+                    onClick={() => signOut()}
+                    className="bg-gray-800 px-4 py-2 hover:bg-gray-700"
+                  >
+                    Sign Out
+                  </button>
+                )}
               </div>
             </div>
 

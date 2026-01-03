@@ -1,19 +1,32 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth";
+import { getCached, setCache } from "@/lib/cache";
+import { checkRateLimit } from "@/lib/rate-limiter";
 
 export async function POST(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.accessToken) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { track } = await request.json();
     if (!track) {
       return NextResponse.json(
         { error: "Track is required" },
         { status: 400 }
+      );
+    }
+
+    // Check cache first
+    const cacheKey = `recommend-${track.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      console.log("Returning cached recommendation");
+      return NextResponse.json(cached);
+    }
+
+    // Check rate limit before calling Gemini
+    const rateLimit = checkRateLimit("gemini-recommend");
+    if (!rateLimit.allowed) {
+      console.log(`Rate limit exceeded. Retry after ${rateLimit.retryAfter}s`);
+      return NextResponse.json(
+        { error: `Rate limit exceeded. Please wait ${rateLimit.retryAfter} seconds.` },
+        { status: 429 }
       );
     }
 
@@ -50,51 +63,61 @@ Respond ONLY with JSON (no markdown):
 
     const recommendation = JSON.parse(jsonMatch[0]);
 
-    // Search for the recommended track on Spotify
-    const searchQuery = `${recommendation.song} ${recommendation.artist}`;
+    // Search for the recommended track on YouTube
+    const searchQuery = `${recommendation.song} ${recommendation.artist} official audio`;
+    const youtubeApiKey = process.env.YOUTUBE_API_KEY;
+
+    if (!youtubeApiKey) {
+      throw new Error("YouTube API key not configured");
+    }
+
     const searchResponse = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=1`,
-      {
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-        },
-      }
+      `https://www.googleapis.com/youtube/v3/search?` +
+        `part=snippet&type=video&videoCategoryId=10&maxResults=1&q=${encodeURIComponent(searchQuery)}&key=${youtubeApiKey}`
     );
 
-    const searchData = await searchResponse.json();
-    const recommendedTrack = searchData.tracks?.items?.[0];
+    if (!searchResponse.ok) {
+      throw new Error("YouTube search failed");
+    }
 
-    if (!recommendedTrack) {
+    const searchData = await searchResponse.json();
+    const video = searchData.items?.[0];
+
+    if (!video) {
       return NextResponse.json(
-        { error: "Could not find recommended track on Spotify" },
+        { error: "Could not find recommended track on YouTube" },
         { status: 404 }
       );
     }
 
     // Get audio features for recommended track
     const featuresResponse = await fetch(
-      `https://api.spotify.com/v1/audio-features/${recommendedTrack.id}`,
-      {
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-        },
-      }
+      `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/youtube/video-details?id=${video.id.videoId}`
     );
 
     const audioFeatures = await featuresResponse.json();
 
     const trackWithFeatures = {
-      id: recommendedTrack.id,
-      name: recommendedTrack.name,
-      artists: recommendedTrack.artists,
-      album: recommendedTrack.album,
+      id: video.id.videoId,
+      name: video.snippet.title,
+      artists: [{ name: video.snippet.channelTitle }],
+      album: {
+        images: [
+          { url: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.default.url }
+        ],
+      },
       audioFeatures,
     };
 
-    return NextResponse.json({
+    const result = {
       recommendedTrack: trackWithFeatures,
       reason: recommendation.reason,
-    });
+    };
+
+    // Cache the result
+    setCache(cacheKey, result);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Recommendation error:", error);
     return NextResponse.json(
