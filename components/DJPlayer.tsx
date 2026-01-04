@@ -206,15 +206,22 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         setNextTrack(data.recommendedTrack);
         setNextReason(data.reason);
 
-        // Add to excluded list if we're skipping cache (getting different recommendation)
-        if (skipCache && data.recommendedTrack) {
-          setExcludedRecommendations(prev => [
-            ...prev,
-            {
-              name: data.recommendedTrack.name,
-              artist: data.recommendedTrack.artists[0]?.name || "Unknown"
-            }
-          ]);
+        // Add to excluded list (always, so we don't recommend it again)
+        if (data.recommendedTrack) {
+          setExcludedRecommendations(prev => {
+            // Check if already in list
+            const alreadyExcluded = prev.some(e => e.id === data.recommendedTrack.id);
+            if (alreadyExcluded) return prev;
+
+            return [
+              ...prev,
+              {
+                id: data.recommendedTrack.id,
+                name: data.recommendedTrack.name,
+                artist: data.recommendedTrack.artists[0]?.name || "Unknown"
+              }
+            ];
+          });
         }
       }
     } catch (error) {

@@ -55,40 +55,82 @@ ${skipCache ? "IMPORTANT: Provide a DIFFERENT recommendation than you might have
 Respond ONLY with JSON (no markdown):
 {"artist": "artist name", "song": "song name", "reason": "brief reason why this transition works"}`;
 
-    const response = await groq.chat.completions.create({
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      model: "llama-3.3-70b-versatile", // Fast and accurate
-      temperature: skipCache ? 1.0 : 0.7, // Higher temperature for more variety when skipping cache
-      max_tokens: 200,
-    });
+    // Try up to 5 times to get a unique recommendation
+    let attempts = 0;
+    let song: any = null;
+    let recommendation: any = null;
 
-    const responseText = response.choices[0]?.message?.content || "";
+    while (attempts < 5 && !song) {
+      attempts++;
+      console.log(`Recommendation attempt ${attempts}`);
 
-    // Parse JSON from response
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error("Could not parse AI recommendation");
+      const response = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "user",
+            content: prompt + (attempts > 1 ? `\n\nAttempt ${attempts}: Please suggest something COMPLETELY DIFFERENT from your previous suggestions.` : ''),
+          },
+        ],
+        model: "llama-3.3-70b-versatile",
+        temperature: skipCache ? Math.min(1.2, 0.7 + (attempts * 0.2)) : 0.7, // Increase temperature with each attempt
+        max_tokens: 200,
+        seed: skipCache ? Math.floor(Math.random() * 1000000) : undefined, // Random seed for variety
+      });
+
+      const responseText = response.choices[0]?.message?.content || "";
+
+      // Parse JSON from response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error("Could not parse AI recommendation");
+        continue;
+      }
+
+      recommendation = JSON.parse(jsonMatch[0]);
+
+      // Check if this song is in the excluded list
+      const isExcluded = excludedSongs.some((excluded: any) =>
+        excluded.name.toLowerCase() === recommendation.song.toLowerCase() &&
+        excluded.artist.toLowerCase() === recommendation.artist.toLowerCase()
+      );
+
+      if (isExcluded) {
+        console.log(`Song "${recommendation.song}" by ${recommendation.artist} is excluded, trying again...`);
+        continue;
+      }
+
+      // Search for the recommended track on YouTube Music
+      const searchQuery = `${recommendation.song} ${recommendation.artist}`;
+
+      const ytmusic = new YTMusic();
+      await ytmusic.initialize();
+
+      const results = await ytmusic.searchSongs(searchQuery);
+      song = results?.[0];
+
+      if (!song) {
+        console.log(`Could not find "${recommendation.song}" on YouTube Music, trying again...`);
+        continue;
+      }
+
+      // Check if the found song is in the excluded list (by video ID)
+      const foundSongExcluded = excludedSongs.some((excluded: any) =>
+        excluded.id === song.videoId
+      );
+
+      if (foundSongExcluded) {
+        console.log(`Found song is excluded (by ID), trying again...`);
+        song = null;
+        continue;
+      }
+
+      // Success!
+      break;
     }
 
-    const recommendation = JSON.parse(jsonMatch[0]);
-
-    // Search for the recommended track on YouTube Music
-    const searchQuery = `${recommendation.song} ${recommendation.artist}`;
-
-    const ytmusic = new YTMusic();
-    await ytmusic.initialize();
-
-    const results = await ytmusic.searchSongs(searchQuery);
-    const song = results?.[0];
-
-    if (!song) {
+    if (!song || !recommendation) {
       return NextResponse.json(
-        { error: "Could not find recommended track on YouTube Music" },
+        { error: "Could not find a unique recommendation after multiple attempts" },
         { status: 404 }
       );
     }
