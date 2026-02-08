@@ -43,8 +43,10 @@ export default function Home() {
   const startPlayback = async (track: Track) => {
     setLoading(true);
     try {
+      // Try to get Spotify features first, fallback to YouTube estimates
+      const artistName = track.artists?.[0]?.name || "";
       const response = await fetch(
-        `/api/youtube/video-details?id=${track.id}`
+        `/api/audio-features?id=${track.id}&name=${encodeURIComponent(track.name)}&artist=${encodeURIComponent(artistName)}`
       );
 
       if (!response.ok) {
@@ -57,6 +59,13 @@ export default function Home() {
         alert(`Could not load audio features for "${track.name}". Please try another song.`);
         setLoading(false);
         return;
+      }
+
+      // Log if using Spotify or estimates
+      if (audioFeatures.source === 'spotify') {
+        console.log(`✓ Using real Spotify audio features for "${track.name}"`);
+      } else {
+        console.log(`⚠ Using estimated audio features for "${track.name}"`);
       }
 
       const trackWithFeatures = { ...track, audioFeatures };

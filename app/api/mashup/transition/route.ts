@@ -29,27 +29,30 @@ export async function POST(request: NextRequest) {
     const prompt = `You are a professional DJ analyzing a transition between two tracks.
 
 Current Track: "${currentTrack.name}" by ${currentTrack.artists[0]?.name}
-- BPM: ${currentTrack.audioFeatures?.tempo || "unknown"}
-- Key: ${currentTrack.audioFeatures?.key || "unknown"}
-- Energy: ${currentTrack.audioFeatures?.energy || "unknown"}
-- Danceability: ${currentTrack.audioFeatures?.danceability || "unknown"}
+- BPM: ${Math.round(currentTrack.audioFeatures?.tempo || 0)}
+- Key: ${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][currentTrack.audioFeatures?.key] || currentTrack.audioFeatures?.key || "unknown"}
+- Energy: ${Math.round((currentTrack.audioFeatures?.energy || 0) * 100)}%
+- Danceability: ${Math.round((currentTrack.audioFeatures?.danceability || 0) * 100)}%
 
 Next Track: "${nextTrack.name}" by ${nextTrack.artists[0]?.name}
-- BPM: ${nextTrack.audioFeatures?.tempo || "unknown"}
-- Key: ${nextTrack.audioFeatures?.key || "unknown"}
-- Energy: ${nextTrack.audioFeatures?.energy || "unknown"}
-- Danceability: ${nextTrack.audioFeatures?.danceability || "unknown"}
+- BPM: ${Math.round(nextTrack.audioFeatures?.tempo || 0)}
+- Key: ${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][nextTrack.audioFeatures?.key] || nextTrack.audioFeatures?.key || "unknown"}
+- Energy: ${Math.round((nextTrack.audioFeatures?.energy || 0) * 100)}%
+- Danceability: ${Math.round((nextTrack.audioFeatures?.danceability || 0) * 100)}%
+
+BPM Difference: ${Math.abs((currentTrack.audioFeatures?.tempo || 0) - (nextTrack.audioFeatures?.tempo || 0)).toFixed(1)} BPM
+Energy Difference: ${Math.abs((currentTrack.audioFeatures?.energy || 0) - (nextTrack.audioFeatures?.energy || 0)) * 100}%
 
 Analyze these tracks and recommend the best transition techniques. For each technique, provide:
-1. A suitability rating (0-100%)
+1. A suitability rating (0-100%) - consider BPM compatibility, key harmony, and energy flow
 2. The optimal transition start time (in seconds before the current track ends)
-3. A brief reason why this technique works or doesn't work
+3. A brief reason why this technique works or doesn't work based on the audio features
 
 Consider these 4 transition techniques:
-- Crossfade: Smooth volume transition between tracks
-- Beat Match: Sync BPM and align beats for seamless mixing
-- Echo Fade: Use echo effects to blend the tracks
-- Filter Sweep: Use frequency filters to transition
+- Crossfade: Smooth volume transition between tracks (best for similar energy/tempo)
+- Beat Match: Sync BPM and align beats for seamless mixing (best for close BPM values)
+- Echo Fade: Use echo effects to blend the tracks (works well with energy changes)
+- Filter Sweep: Use frequency filters to transition (good for building tension)
 
 Respond ONLY with JSON (no markdown):
 {

@@ -10,6 +10,14 @@ interface Track {
   audioFeatures?: any;
 }
 
+interface RecommendedTrack extends Track {
+  transitionScore: number;
+  transitionReason: string;
+  bpmMatch: number;
+  keyMatch: number;
+  energyMatch: number;
+}
+
 interface DJPlayerProps {
   initialTrack: Track;
   onStop: () => void;
@@ -35,6 +43,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
   const [nextTrack, setNextTrack] = useState<Track | null>(null);
   const [nextReason, setNextReason] = useState<string>("");
+  const [recommendedTracks, setRecommendedTracks] = useState<RecommendedTrack[]>([]);
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -46,6 +56,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const playerAContainerRef = useRef<HTMLDivElement>(null);
   const playerBContainerRef = useRef<HTMLDivElement>(null);
   const positionIntervalRef = useRef<any>(null);
+  const audioAnalyzerRef = useRef<ReturnType<typeof getAudioAnalyzer> | null>(null);
+  const [isAnalyzingAudio, setIsAnalyzingAudio] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
 
   const currentTrack = queue[currentIndex];
   const player = activePlayer === 'A' ? playerA : playerB;
@@ -183,73 +196,60 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     };
   }, [player, playerReady, isPlaying, activePlayer]);
 
-  // Function to fetch a new recommendation
-  const fetchNewRecommendation = async (skipCache = false) => {
+  // Get next track recommendations (multiple tracks with ratings)
+  useEffect(() => {
+    const getRecommendations = async () => {
     const current = queue[currentIndex];
     if (!current) return;
 
-    console.log("Fetching AI recommendation for:", current.name);
-    console.log("Excluded songs:", excludedRecommendations.length);
+      // If there's already a next track in the queue, use it as primary
+      if (currentIndex < queue.length - 1) {
+        setNextTrack(queue[currentIndex + 1]);
+        setNextReason("Next in queue");
+        // Still show recommendations
+        fetchRecommendationList();
+        return;
+      }
+
+      // Fetch AI recommendations
+      fetchRecommendationList();
+    };
+    getRecommendations();
+  }, [currentIndex, queue]);
+
+  const fetchRecommendationList = async () => {
+    const current = queue[currentIndex];
+    if (!current) return;
+
+    setLoadingRecommendations(true);
+    console.log("Fetching recommendation list for:", current.name);
 
     try {
-      const res = await fetch("/api/mashup/recommend", {
+      const res = await fetch("/api/mashup/recommend-list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           track: current,
-          skipCache,
-          excludedSongs: excludedRecommendations
+          count: 8, // Get 8 recommendations
         }),
       });
+      
       if (res.ok) {
         const data = await res.json();
-        setNextTrack(data.recommendedTrack);
-        setNextReason(data.reason);
-
-        // Add to excluded list (always, so we don't recommend it again)
-        if (data.recommendedTrack) {
-          setExcludedRecommendations(prev => {
-            // Check if already in list
-            const alreadyExcluded = prev.some(e => e.id === data.recommendedTrack.id);
-            if (alreadyExcluded) return prev;
-
-            return [
-              ...prev,
-              {
-                id: data.recommendedTrack.id,
-                name: data.recommendedTrack.name,
-                artist: data.recommendedTrack.artists[0]?.name || "Unknown"
-              }
-            ];
-          });
+        setRecommendedTracks(data.recommendations || []);
+        
+        // Set the top recommendation as next track if no queue item
+        if (data.recommendations.length > 0 && currentIndex >= queue.length - 1) {
+          setNextTrack(data.recommendations[0]);
+          setNextReason(data.recommendations[0].transitionReason);
         }
       }
     } catch (error) {
-      console.error("Failed to get next track:", error);
+      console.error("Failed to get recommendations:", error);
+    } finally {
+      setLoadingRecommendations(false);
     }
   };
-
-  // Get next track recommendation (only when current track changes and no next track in queue)
-  useEffect(() => {
-    const getNextTrack = async () => {
-      const current = queue[currentIndex];
-      if (!current) return;
-
-      // Reset excluded recommendations when track changes
-      setExcludedRecommendations([]);
-
-      // If there's already a next track in the queue, don't fetch AI recommendation
-      if (currentIndex < queue.length - 1) {
-        setNextTrack(queue[currentIndex + 1]);
-        setNextReason("Next in queue");
-        return;
-      }
-
-      // Only fetch AI recommendation if we're at the end of the queue
-      fetchNewRecommendation(false);
-    };
-    getNextTrack();
-  }, [currentIndex, queue]);
 
   // Get transition recommendations when we have both tracks (only once per pair)
   useEffect(() => {
@@ -342,16 +342,17 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     }
   };
 
-  const addToQueue = () => {
-    if (!nextTrack) return;
+  const addToQueue = (track?: Track) => {
+    const trackToAdd = track || nextTrack;
+    if (!trackToAdd) return;
 
     // Check if track is already in queue
-    if (queue.find(t => t.id === nextTrack.id)) {
+    if (queue.find(t => t.id === trackToAdd.id)) {
       alert("This track is already in the queue!");
       return;
     }
 
-    setQueue([...queue, nextTrack]);
+    setQueue([...queue, trackToAdd]);
   };
 
   const skipToNext = () => {
@@ -390,8 +391,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
   const getColorForRating = (rating: number) => {
     if (rating >= 80) return "bg-green-600";
-    if (rating >= 60) return "bg-yellow-600";
-    if (rating >= 40) return "bg-orange-600";
+    if (rating >= 65) return "bg-yellow-600";
+    if (rating >= 50) return "bg-orange-600";
     return "bg-red-600";
   };
 
@@ -608,14 +609,24 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
       {/* Left Section: Prompt */}
       <div className="w-64 border-r border-gray-700 flex flex-col p-4">
-        <h2 className="text-lg font-bold mb-4">Prompt</h2>
+        <h2 className="text-lg font-bold mb-2">AI Prompt</h2>
+        <p className="text-xs text-gray-400 mb-3">
+          Describe the vibe or style you want for recommendations
+        </p>
         <textarea
-          placeholder="Describe the vibe or transition you want..."
+          placeholder="e.g., 'upbeat party vibes' or 'smooth chill transition'..."
           className="w-full h-32 bg-gray-800 border border-gray-700 p-3 text-sm resize-none focus:outline-none focus:border-gray-600 rounded"
+          disabled
         />
-        <button className="w-full mt-3 bg-white text-black px-4 py-2 text-sm font-semibold hover:bg-gray-200 rounded">
-          Generate
+        <button 
+          className="w-full mt-3 bg-gray-700 text-gray-500 px-4 py-2 text-sm font-semibold rounded cursor-not-allowed"
+          disabled
+        >
+          Coming Soon
         </button>
+        <p className="text-xs text-gray-500 mt-2 text-center">
+          Feature in development
+        </p>
       </div>
 
       {/* Center Section */}
@@ -634,9 +645,51 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           {/* Track Info & Player Controls */}
           <div className="flex-1">
             <h2 className="text-2xl font-bold mb-1">{currentTrack?.name}</h2>
-            <p className="text-lg text-gray-400 mb-4">
+            <p className="text-lg text-gray-400 mb-2">
               {currentTrack?.artists.map(a => a.name).join(", ")}
             </p>
+
+            {/* Audio Features Display */}
+            {currentTrack?.audioFeatures && (
+              <div className="mb-4">
+                <div className="flex gap-4 text-xs mb-1">
+                  <div className="bg-gray-800 px-3 py-1.5 rounded">
+                    <span className="text-gray-400">BPM:</span>{" "}
+                    <span className="text-white font-semibold">
+                      {Math.round(currentTrack.audioFeatures.tempo)}
+                    </span>
+                  </div>
+                  <div className="bg-gray-800 px-3 py-1.5 rounded">
+                    <span className="text-gray-400">Key:</span>{" "}
+                    <span className="text-white font-semibold">
+                      {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][currentTrack.audioFeatures.key] || currentTrack.audioFeatures.key}
+                    </span>
+                  </div>
+                  <div className="bg-gray-800 px-3 py-1.5 rounded">
+                    <span className="text-gray-400">Energy:</span>{" "}
+                    <span className="text-white font-semibold">
+                      {Math.round(currentTrack.audioFeatures.energy * 100)}%
+                    </span>
+                  </div>
+                  <div className="bg-gray-800 px-3 py-1.5 rounded">
+                    <span className="text-gray-400">Dance:</span>{" "}
+                    <span className="text-white font-semibold">
+                      {Math.round(currentTrack.audioFeatures.danceability * 100)}%
+                    </span>
+                  </div>
+                </div>
+                {/* Source indicator */}
+                {currentTrack.audioFeatures.source && (
+                  <div className="text-xs">
+                    {currentTrack.audioFeatures.source === 'reccobeats' ? (
+                      <span className="text-green-400">✓ ReccoBeats audio analysis</span>
+                    ) : (
+                      <span className="text-yellow-400">⚠ Estimated features</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Playback Controls */}
             <div className="flex items-center gap-3 mb-4">
@@ -821,92 +874,197 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       {/* Queue Sidebar */}
       <div className="w-96 border-l border-gray-800 bg-gray-900 flex flex-col">
         <div className="p-4 border-b border-gray-800">
-          <h2 className="text-lg font-bold">Queue</h2>
-          <p className="text-sm text-gray-400">{queue.length - currentIndex} tracks</p>
+          <h2 className="text-lg font-bold">Up Next</h2>
+          <p className="text-sm text-gray-400">
+            {queue.length - currentIndex - 1} in queue
+          </p>
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {/* Current Queue - only show current and upcoming tracks */}
-          {queue.slice(currentIndex).map((track, relativeIndex) => {
-            const actualIndex = currentIndex + relativeIndex;
+          {/* Current Queue - only show upcoming tracks (not current) */}
+          {queue.slice(currentIndex + 1).map((track, relativeIndex) => {
+            const actualIndex = currentIndex + 1 + relativeIndex;
             return (
               <div
                 key={`${track.id}-${actualIndex}`}
-                className={`p-3 border-b border-gray-800 ${
-                  relativeIndex === 0 ? "bg-gray-800" : "hover:bg-gray-800"
-                }`}
+                className="p-3 border-b border-gray-800 hover:bg-gray-800"
               >
                 <div className="flex items-center gap-3">
                   {track.album?.images?.[0]?.url && (
                     <img
                       src={track.album.images[0].url}
                       alt={track.name}
-                      className="h-12 w-12"
+                      className="h-12 w-12 rounded"
                     />
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium truncate">
-                      {relativeIndex === 0 && "▶ "}
-                      {track.name}
-                    </p>
-                    <p className="text-sm text-gray-400 truncate">
+                    <p className="font-medium truncate text-sm">{track.name}</p>
+                    <p className="text-xs text-gray-400 truncate">
                       {track.artists.map(a => a.name).join(", ")}
                     </p>
                   </div>
-                  {relativeIndex > 0 && (
                     <button
                       onClick={() => removeFromQueue(actualIndex)}
-                      className="text-gray-400 hover:text-white text-sm"
+                    className="text-gray-400 hover:text-white text-sm flex-shrink-0"
                     >
                       ✕
                     </button>
-                  )}
                 </div>
               </div>
             );
           })}
 
-          {/* AI Recommendation */}
-          {nextTrack && (
-            <div className="p-3 border-b border-gray-800 bg-gray-800">
-              <div className="flex items-center gap-3">
-                {nextTrack.album?.images?.[0]?.url && (
-                  <img
-                    src={nextTrack.album.images[0].url}
-                    alt={nextTrack.name}
-                    className="h-12 w-12"
+          {/* Recommended Tracks Section */}
+          <div className="border-t border-gray-700 mt-2">
+            <div className="p-3 bg-gray-800 sticky top-0">
+              <h3 className="text-sm font-bold text-gray-300 mb-1">
+                🎵 AI Recommendations
+              </h3>
+              <p className="text-xs text-gray-500">
+                Optimized for smooth transitions
+              </p>
+            </div>
+
+            {loadingRecommendations ? (
+              <div className="p-6 text-center text-gray-400 text-sm">
+                <div className="animate-pulse">Analyzing transitions...</div>
+              </div>
+            ) : recommendedTracks.length === 0 ? (
+              <div className="p-6 text-center text-gray-400 text-sm">
+                No recommendations available
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {recommendedTracks.map((track, index) => {
+                  const isInQueue = queue.some(q => q.id === track.id);
+                  
+                  return (
+                    <div
+                      key={track.id}
+                      className="p-3 border-b border-gray-800 hover:bg-gray-800 transition-colors"
+                    >
+                      <div className="flex items-start gap-3">
+                        {track.album?.images?.[0]?.url && (
+                          <img
+                            src={track.album.images[0].url}
+                            alt={track.name}
+                            className="h-14 w-14 rounded flex-shrink-0"
                   />
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">{nextTrack.name}</p>
-                  <p className="text-sm text-gray-400 truncate">
-                    {nextTrack.artists.map(a => a.name).join(", ")}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">{nextReason}</p>
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium truncate text-sm">{track.name}</p>
+                              <p className="text-xs text-gray-400 truncate">
+                                {track.artists.map(a => a.name).join(", ")}
+                              </p>
                 </div>
+                            <div className={`flex-shrink-0 px-2 py-1 rounded text-xs font-bold ${
+                              track.transitionScore >= 80 ? 'bg-green-600 text-white' :
+                              track.transitionScore >= 65 ? 'bg-yellow-600 text-white' :
+                              track.transitionScore >= 50 ? 'bg-orange-600 text-white' :
+                              'bg-red-600 text-white'
+                            }`}>
+                              {track.transitionScore}%
               </div>
-              <div className="flex gap-2 mt-2">
+                          </div>
+
+                          {/* Transition metrics */}
+                          <div className="flex gap-3 mb-2 text-xs">
+                            <div className="flex items-center gap-1" title="BPM Match">
+                              <span className="text-gray-500">🎵</span>
+                              <div className="w-12 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div 
+                                  className={`h-full ${track.bpmMatch >= 80 ? 'bg-green-500' : track.bpmMatch >= 60 ? 'bg-yellow-500' : 'bg-orange-500'}`}
+                                  style={{ width: `${track.bpmMatch}%` }}
+                                />
+                              </div>
+                              <span className="text-gray-400 text-xs">{track.bpmMatch}%</span>
+                            </div>
+                            <div className="flex items-center gap-1" title="Key Match">
+                              <span className="text-gray-500">🎹</span>
+                              <div className="w-12 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div 
+                                  className={`h-full ${track.keyMatch >= 80 ? 'bg-green-500' : track.keyMatch >= 60 ? 'bg-yellow-500' : 'bg-orange-500'}`}
+                                  style={{ width: `${track.keyMatch}%` }}
+                                />
+                              </div>
+                              <span className="text-gray-400 text-xs">{track.keyMatch}%</span>
+                            </div>
+                            <div className="flex items-center gap-1" title="Energy Match">
+                              <span className="text-gray-500">⚡</span>
+                              <div className="w-12 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div 
+                                  className={`h-full ${track.energyMatch >= 80 ? 'bg-green-500' : track.energyMatch >= 60 ? 'bg-yellow-500' : 'bg-orange-500'}`}
+                                  style={{ width: `${track.energyMatch}%` }}
+                                />
+                              </div>
+                              <span className="text-gray-400 text-xs">{track.energyMatch}%</span>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-gray-500 mb-2 line-clamp-2">
+                            {track.transitionReason}
+                          </p>
+
+                          {/* Track audio features */}
+                          {track.audioFeatures && (
+                            <div className="flex gap-2 mb-2 text-xs text-gray-500">
+                              <span>{Math.round(track.audioFeatures.tempo)} BPM</span>
+                              <span>•</span>
+                              <span>Key: {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][track.audioFeatures.key] || track.audioFeatures.key}</span>
+                              <span>•</span>
+                              <span>Energy: {Math.round(track.audioFeatures.energy * 100)}%</span>
+                            </div>
+                          )}
+
+                          {/* Action buttons */}
+                          <div className="flex gap-2">
                 <button
-                  onClick={addToQueue}
-                  className="flex-1 bg-white text-black px-3 py-2 text-sm font-medium hover:bg-gray-200"
-                >
-                  Add to Queue
+                              onClick={() => addToQueue(track)}
+                              disabled={isInQueue}
+                              className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                                isInQueue
+                                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                                  : index === 0
+                                  ? 'bg-white text-black hover:bg-gray-200'
+                                  : 'bg-gray-700 text-white hover:bg-gray-600'
+                              }`}
+                            >
+                              {isInQueue ? '✓ In Queue' : '+ Add to Queue'}
                 </button>
+                            {index === 0 && !isInQueue && (
                 <button
-                  onClick={skipToNext}
-                  className="flex-1 bg-gray-700 px-3 py-2 text-sm font-medium hover:bg-gray-600"
-                >
-                  Play Next
+                                onClick={() => {
+                                  setNextTrack(track);
+                                  setNextReason(track.transitionReason);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 rounded transition-colors"
+                              >
+                                Set as Next
                 </button>
+                            )}
               </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Refresh button */}
+            {!loadingRecommendations && recommendedTracks.length > 0 && (
+              <div className="p-3 border-t border-gray-800 bg-gray-900">
               <button
-                onClick={() => fetchNewRecommendation(true)}
-                className="w-full mt-2 bg-gray-800 text-white px-3 py-2 text-sm font-medium hover:bg-gray-700 border border-gray-600"
+                  onClick={fetchRecommendationList}
+                  className="w-full bg-gray-800 text-white px-3 py-2 text-sm font-medium hover:bg-gray-700 border border-gray-600 rounded"
               >
-                🔄 Get Different Recommendation
+                  🔄 Get New Recommendations
               </button>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>
