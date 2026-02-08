@@ -16,7 +16,6 @@ export async function getReccoBeatsAudioFeatures(
 ): Promise<any | null> {
   try {
     // Step 1: Lookup track by Spotify ID to get ReccoBeats ID
-    console.log(`Looking up ReccoBeats track for Spotify ID: ${spotifyTrackId}`);
     const lookupUrl = `${RECCOBEATS_API_BASE}/v1/track?ids=${spotifyTrackId}`;
     
     const lookupResponse = await fetch(lookupUrl, {
@@ -31,14 +30,12 @@ export async function getReccoBeatsAudioFeatures(
     }
 
     const lookup = await lookupResponse.json();
-    const reccoId = lookup.tracks?.[0]?.id;
+    const reccoId = lookup.content?.[0]?.id;
     
     if (!reccoId) {
       console.log(`No ReccoBeats track found for Spotify ID: ${spotifyTrackId}`);
       return null;
     }
-
-    console.log(`✓ Found ReccoBeats ID: ${reccoId}`);
 
     // Step 2: Get audio features using ReccoBeats ID
     const featuresUrl = `${RECCOBEATS_API_BASE}/v1/track/${reccoId}/audio-features`;
@@ -55,7 +52,6 @@ export async function getReccoBeatsAudioFeatures(
     }
 
     const features = await featuresResponse.json();
-    console.log(`✓ Got ReccoBeats audio features`);
 
     // Normalize to our format
     return {

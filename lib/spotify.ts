@@ -133,25 +133,19 @@ export async function getSpotifyTrackWithFeatures(
 ): Promise<{ track: any; features: any } | null> {
   try {
     // Step 1: Search Spotify to get Spotify ID
-    console.log(`Searching Spotify for "${trackName}" by ${artistName}...`);
     const track = await searchSpotifyTrack(trackName, artistName);
     
     if (!track) {
-      console.log(`Track not found on Spotify`);
       return null;
     }
-
-    console.log(`✓ Found Spotify ID: ${track.id}`);
 
     // Step 2: Query ReccoBeats with Spotify ID
     const reccobeatsData = await getReccoBeatsTrackWithFeatures(track.id);
     
     if (!reccobeatsData?.features) {
-      console.log(`✗ ReccoBeats doesn't have this track`);
       return null;
     }
 
-    console.log(`✓ Got ReccoBeats features!`);
     return { track, features: reccobeatsData.features };
   } catch (error) {
     console.error("Error getting track with features:", error);
