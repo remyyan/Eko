@@ -145,12 +145,9 @@ export async function POST(request: Request) {
     const genrePool = GENRE_POOLS[Math.floor(Math.random() * GENRE_POOLS.length)];
     const overGenerateCount = Math.max(count + 3, 8);
 
-    const vibeDirection = vibePrompt
-      ? `Style: "${vibePrompt}".`
-      : `Mix from ${genrePool} and similar genres.`;
-
-    const prompt = `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). ${vibeDirection} Variety: different artists/eras. JSON only:
-{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
+    const prompt = vibePrompt
+      ? `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}). USER REQUEST: "${vibePrompt}" — follow this EXACTLY. If they ask for a specific artist, ONLY list songs by that artist. JSON only:\n{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`
+      : `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). Mix from ${genrePool} and similar genres. Variety: different artists/eras. JSON only:\n{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],

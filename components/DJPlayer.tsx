@@ -910,24 +910,45 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     outgoingDurationSec={duration ? duration / 1000 : undefined}
                     incomingStartSec={incomingStartSec}
                   />
-                  {/* Incoming track start offset */}
-                  {!isTransitioning && (
-                    <div className="flex items-center gap-3 px-1">
-                      <span className="text-[10px] text-gray-500 w-20 flex-shrink-0">Incoming start</span>
-                      <input
-                        type="range"
-                        min={0}
-                        max={60}
-                        step={1}
-                        value={incomingStartSec}
-                        onChange={(e) => setIncomingStartSec(Number(e.target.value))}
-                        className="flex-1 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                      />
-                      <span className="text-[10px] text-emerald-400 w-8 text-right font-mono">
-                        {incomingStartSec > 0 ? `+${incomingStartSec}s` : "0:00"}
-                      </span>
-                    </div>
-                  )}
+                  {/* Incoming track start — phrase-based quick picks */}
+                  {!isTransitioning && (() => {
+                    const inBpm = nextTrack?.audioFeatures?.tempo || 120;
+                    const beatMs = 60_000 / inBpm;
+                    const phraseMs = beatMs * 16;
+                    // Generate first 4 phrase boundaries as quick-pick options
+                    const phraseOptions = [0, 1, 2, 3].map(i => {
+                      const sec = Math.round((i * phraseMs) / 1000);
+                      const m = Math.floor(sec / 60);
+                      const s = sec % 60;
+                      return { sec, label: i === 0 ? "Start" : `${m}:${s.toString().padStart(2, "0")}` };
+                    });
+
+                    return (
+                      <div className="flex items-center gap-2 px-1">
+                        <span className="text-[10px] text-gray-500 flex-shrink-0">
+                          Start incoming at:
+                        </span>
+                        <div className="flex gap-1">
+                          {phraseOptions.map((opt) => (
+                            <button
+                              key={opt.sec}
+                              onClick={() => setIncomingStartSec(opt.sec)}
+                              className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                                incomingStartSec === opt.sec
+                                  ? "bg-emerald-600 text-white"
+                                  : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        <span className="text-[10px] text-gray-600 ml-1">
+                          (4-bar phrases)
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

@@ -126,14 +126,11 @@ export default function TransitionWaveform({
   incomingStartSec = 0,
   outgoingDurationSec,
 }: TransitionWaveformProps) {
-  const outBars = useMemo(
-    () => generateWaveform(currentTrackName, BAR_COUNT),
-    [currentTrackName]
-  );
-  const inBars = useMemo(
-    () => generateWaveform(nextTrackName, BAR_COUNT),
-    [nextTrackName]
-  );
+  // Seed waveform by track name + cue position so bars change when you pick a different cue point
+  const outSeed = `${currentTrackName}-${outgoingCuePct?.toFixed(2) ?? "end"}`;
+  const inSeed = `${nextTrackName}-${incomingStartSec}`;
+  const outBars = useMemo(() => generateWaveform(outSeed, BAR_COUNT), [outSeed]);
+  const inBars = useMemo(() => generateWaveform(inSeed, BAR_COUNT), [inSeed]);
   const schedule = useMemo(
     () => getSchedule(transitionType, bpm),
     [transitionType, bpm]
