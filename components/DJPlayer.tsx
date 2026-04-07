@@ -217,12 +217,12 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     getRecommendations();
   }, [currentIndex, queue]);
 
-  const fetchRecommendationList = async () => {
+  const fetchRecommendationList = async (skipCache = false) => {
     const current = queue[currentIndex];
     if (!current) return;
 
     setLoadingRecommendations(true);
-    console.log("Fetching recommendation list for:", current.name);
+    console.log("Fetching recommendation list for:", current.name, skipCache ? "(fresh)" : "");
 
     try {
       const res = await fetch("/api/mashup/recommend-list", {
@@ -230,7 +230,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           track: current,
-          count: 8, // Get 8 recommendations
+          count: 8,
+          skipCache,
         }),
       });
       
@@ -1057,7 +1058,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             {!loadingRecommendations && recommendedTracks.length > 0 && (
               <div className="p-3 border-t border-gray-800 bg-gray-900">
               <button
-                  onClick={fetchRecommendationList}
+                  onClick={() => fetchRecommendationList(true)}
                   className="w-full bg-gray-800 text-white px-3 py-2 text-sm font-medium hover:bg-gray-700 border border-gray-600 rounded"
               >
                   🔄 Get New Recommendations

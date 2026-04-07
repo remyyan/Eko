@@ -120,16 +120,18 @@ const GENRE_POOLS = [
 
 export async function POST(request: Request) {
   try {
-    const { track, count = 5 } = await request.json();
+    const { track, count = 5, skipCache = false } = await request.json();
 
     if (!track) {
       return NextResponse.json({ error: "Track is required" }, { status: 400 });
     }
 
-    const cacheKey = `recommend-list-${track.id}-${count}-${Math.floor(Date.now() / 60000)}`;
-    const cached = getCached(cacheKey);
-    if (cached) {
-      return NextResponse.json(cached);
+    const cacheKey = `recommend-list-${track.id}-${count}`;
+    if (!skipCache) {
+      const cached = getCached(cacheKey);
+      if (cached) {
+        return NextResponse.json(cached);
+      }
     }
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
