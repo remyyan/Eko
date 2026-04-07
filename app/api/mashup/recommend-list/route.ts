@@ -109,6 +109,35 @@ async function fetchTrackFeatures(
   return { features: await resp.json(), albumImage: "" };
 }
 
+/**
+ * Try to extract a specific artist name from the user's vibe prompt.
+ * Returns lowercase artist name if detected, null otherwise.
+ */
+function extractArtistFilter(prompt: string): string | null {
+  const lower = prompt.toLowerCase().trim();
+
+  // Patterns: "only X songs", "X songs only", "only X", "just X", "X only"
+  const patterns = [
+    /only\s+(.+?)\s+songs/,
+    /(.+?)\s+songs\s+only/,
+    /only\s+(.+?)$/,
+    /just\s+(.+?)\s+songs/,
+    /(.+?)\s+only$/,
+    /^(.+?)\s+songs$/,
+    /i\s+want\s+(?:an?\s+)?(.+?)\s+(?:concert|set|songs|playlist|mix)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = lower.match(pattern);
+    if (match) {
+      const artist = match[1].replace(/['"]/g, "").trim();
+      if (artist.length >= 2 && artist.length <= 40) return artist;
+    }
+  }
+
+  return null;
+}
+
 const GENRE_POOLS = [
   "K-pop, J-pop, and Asian pop",
   "Western pop and electropop",
@@ -143,7 +172,7 @@ export async function POST(request: Request) {
 
     const keyName = currentKey != null ? keyToName(currentKey, currentMode) : "unknown";
     const genrePool = GENRE_POOLS[Math.floor(Math.random() * GENRE_POOLS.length)];
-    const overGenerateCount = Math.max(count + 3, 8);
+    const overGenerateCount = vibePrompt ? Math.max(count * 3, 15) : Math.max(count + 3, 8);
 
     const prompt = vibePrompt
       ? `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}). USER REQUEST: "${vibePrompt}" — follow this EXACTLY. If they ask for a specific artist, ONLY list songs by that artist. JSON only:\n{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`
@@ -173,12 +202,27 @@ export async function POST(request: Request) {
     }
     const candidates: RecommendedTrack[] = [];
 
+    // Extract artist name from vibe prompt for post-filtering
+    // Detects patterns like "nmixx songs only", "only twice", "blackpink songs"
+    const artistFilter = vibePrompt
+      ? extractArtistFilter(vibePrompt)
+      : null;
+
     const processBatch = async (recs: any[]) => {
       return Promise.allSettled(
         recs.map(async (rec) => {
           const results = await searchYouTubeMusic(`${rec.song} ${rec.artist}`, 1);
           const song = results?.[0];
           if (!song) return null;
+
+          // If the user requested a specific artist, verify the YouTube result matches
+          if (artistFilter) {
+            const resultArtist = song.artist.name.toLowerCase();
+            if (!resultArtist.includes(artistFilter)) {
+              console.log(`Filtered out "${song.name}" by ${song.artist.name} (doesn't match "${artistFilter}")`);
+              return null;
+            }
+          }
 
           const { features, albumImage } = await fetchTrackFeatures(
             rec.song,
