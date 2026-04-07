@@ -70,6 +70,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
   const [selectedCuePoint, setSelectedCuePoint] = useState<CuePoint | null>(null);
   const [incomingStartSec, setIncomingStartSec] = useState(0);
+  const [incomingSections, setIncomingSections] = useState<CuePoint[]>([]);
+  const [incomingStructureSource, setIncomingStructureSource] = useState("none");
   const [vibePrompt, setVibePrompt] = useState("");
   const [manualSearch, setManualSearch] = useState("");
   const [manualResults, setManualResults] = useState<Track[]>([]);
@@ -134,6 +136,51 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const cuePoints = songSections.length > 0
     ? songSections
     : generateCuePoints(duration, currentTrack?.audioFeatures?.tempo || 120);
+
+  // Fetch incoming track's song structure
+  useEffect(() => {
+    if (!nextTrack) {
+      setIncomingSections([]);
+      setIncomingStructureSource("none");
+      return;
+    }
+
+    const trackName = nextTrack.name;
+    const artistName = nextTrack.artists?.[0]?.name || "";
+    // Use a rough duration estimate — incoming track hasn't loaded yet
+    const estDurationMs = 210_000; // 3.5 min default
+
+    const fetchIncoming = async () => {
+      try {
+        const res = await fetch(
+          `/api/song-structure?track=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}&duration=${estDurationMs}`
+        );
+        if (!res.ok) throw new Error("Failed");
+        const data = await res.json();
+
+        if (data.sections?.length > 0) {
+          setIncomingSections(
+            data.sections.map((s: any) => ({
+              positionMs: s.startMs,
+              label: s.label,
+              type: s.type,
+              color: s.color,
+              score: s.score,
+            }))
+          );
+          setIncomingStructureSource(data.source);
+        } else {
+          setIncomingSections([]);
+          setIncomingStructureSource("none");
+        }
+      } catch {
+        setIncomingSections([]);
+        setIncomingStructureSource("none");
+      }
+    };
+
+    fetchIncoming();
+  }, [nextTrack?.id]);
 
   // Load YouTube IFrame API and initialize dual players
   useEffect(() => {
@@ -965,45 +1012,77 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     outgoingDurationSec={duration ? duration / 1000 : undefined}
                     incomingStartSec={incomingStartSec}
                   />
-                  {/* Incoming track start — phrase-based quick picks */}
-                  {!isTransitioning && (() => {
-                    const inBpm = nextTrack?.audioFeatures?.tempo || 120;
-                    const beatMs = 60_000 / inBpm;
-                    const phraseMs = beatMs * 16;
-                    // Generate first 4 phrase boundaries as quick-pick options
-                    const phraseOptions = [0, 1, 2, 3].map(i => {
-                      const sec = Math.round((i * phraseMs) / 1000);
-                      const m = Math.floor(sec / 60);
-                      const s = sec % 60;
-                      return { sec, label: i === 0 ? "Start" : `${m}:${s.toString().padStart(2, "0")}` };
-                    });
-
-                    return (
-                      <div className="flex items-center gap-2 px-1">
-                        <span className="text-[10px] text-gray-500 flex-shrink-0">
-                          Start incoming at:
+                  {/* Incoming track cue — section-based picker */}
+                  {!isTransitioning && (
+                    <div className="bg-gray-900/50 rounded-lg p-2.5 border border-gray-800/50">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] text-gray-500">
+                          Start <span className="text-emerald-400">{nextTrack?.name}</span> at:
                         </span>
-                        <div className="flex gap-1">
-                          {phraseOptions.map((opt) => (
+                        {incomingStructureSource !== "none" && (
+                          <span className={`text-[9px] px-1 py-0.5 rounded ${
+                            incomingStructureSource === "synced_lyrics"
+                              ? "text-green-400 bg-green-950"
+                              : "text-yellow-400 bg-yellow-950"
+                          }`}>
+                            {incomingStructureSource === "synced_lyrics" ? "✓ Real" : "~ Lyrics"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          onClick={() => setIncomingStartSec(0)}
+                          className={`px-2 py-1 text-[10px] rounded transition-colors ${
+                            incomingStartSec === 0
+                              ? "bg-emerald-600 text-white"
+                              : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                          }`}
+                        >
+                          Start
+                        </button>
+                        {(incomingSections.length > 0
+                          ? incomingSections
+                          : (() => {
+                              // Fallback to phrase boundaries
+                              const inBpm = nextTrack?.audioFeatures?.tempo || 120;
+                              const phraseMs = (60_000 / inBpm) * 16;
+                              return [1, 2, 3].map(i => ({
+                                positionMs: i * phraseMs,
+                                label: `Phrase ${i}`,
+                                type: "phrase" as const,
+                                color: "#60a5fa",
+                                score: 40,
+                              }));
+                            })()
+                        ).map((section, i) => {
+                          const sec = Math.round(section.positionMs / 1000);
+                          const m = Math.floor(sec / 60);
+                          const s = sec % 60;
+                          const isSelected = incomingStartSec === sec;
+
+                          return (
                             <button
-                              key={opt.sec}
-                              onClick={() => setIncomingStartSec(opt.sec)}
-                              className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                                incomingStartSec === opt.sec
+                              key={i}
+                              onClick={() => setIncomingStartSec(sec)}
+                              className={`px-2 py-1 text-[10px] rounded transition-colors flex items-center gap-1 ${
+                                isSelected
                                   ? "bg-emerald-600 text-white"
                                   : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
                               }`}
+                              title={`${section.label} — ${section.score || 50}% transition quality`}
                             >
-                              {opt.label}
+                              <span
+                                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: section.color }}
+                              />
+                              <span>{section.label}</span>
+                              <span className="text-gray-500">{m}:{s.toString().padStart(2, "0")}</span>
                             </button>
-                          ))}
-                        </div>
-                        <span className="text-[10px] text-gray-600 ml-1">
-                          (4-bar phrases)
-                        </span>
+                          );
+                        })}
                       </div>
-                    );
-                  })()}
+                    </div>
+                  )}
                 </div>
               )}
 
