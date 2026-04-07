@@ -106,71 +106,85 @@ function parseSyncedLyrics(synced: string): LRCLine[] {
   return lines.sort((a, b) => a.timeMs - b.timeMs);
 }
 
+// Minimum gap between two sections to avoid clutter (15 seconds)
+const MIN_SECTION_GAP_MS = 15_000;
+// Minimum gap in lyrics to count as an instrumental break
+const INSTRUMENTAL_GAP_MS = 10_000;
+
+function tooCloseToExisting(sections: SongSection[], timeMs: number): boolean {
+  return sections.some(s => Math.abs(s.startMs - timeMs) < MIN_SECTION_GAP_MS);
+}
+
 /**
  * Detect sections from synced lyrics.
- * Strategy:
- * 1. Look for [Section] markers in the text
- * 2. Detect instrumental gaps (>4 seconds of silence between lines)
- * 3. Detect chorus repetitions (repeated line sequences)
+ *
+ * Priority: explicit [Section] markers > instrumental gaps > chorus detection.
+ * Enforces a minimum 15s gap between sections so the bar isn't cluttered.
  */
 function sectionsFromSyncedLyrics(lines: LRCLine[], durationMs: number): SongSection[] {
   const sections: SongSection[] = [];
-  const seenTexts = new Map<string, number>(); // text → count
 
-  // First pass: count line repetitions to identify chorus lines
+  // --- Pass 1: Explicit section markers (highest priority) ---
   for (const line of lines) {
-    if (line.text && !SECTION_REGEX.test(line.text)) {
-      const norm = line.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-      if (norm) seenTexts.set(norm, (seenTexts.get(norm) || 0) + 1);
+    const m = line.text.match(SECTION_REGEX);
+    if (m) {
+      const label = m[1];
+      const type = classifySection(label);
+      if (!tooCloseToExisting(sections, line.timeMs)) {
+        sections.push({
+          label,
+          type,
+          startMs: line.timeMs,
+          score: scoreSection(type),
+        });
+      }
     }
   }
 
-  // Find the most repeated lines (likely chorus)
-  const maxRepeat = Math.max(...seenTexts.values(), 1);
-  const chorusThreshold = Math.max(2, Math.floor(maxRepeat * 0.6));
+  // If we got explicit markers, that's the best data — just add outro detection and return
+  if (sections.length >= 3) {
+    addOutroIfNeeded(sections, durationMs);
+    return sections.sort((a, b) => a.startMs - b.startMs);
+  }
 
-  let lastTimeMs = 0;
+  // --- Pass 2: Detect instrumental gaps (≥10s between lyric lines) ---
+  let lastVocalMs = 0;
+  for (const line of lines) {
+    if (!line.text.trim() || SECTION_REGEX.test(line.text)) continue;
+    if (line.timeMs - lastVocalMs >= INSTRUMENTAL_GAP_MS && lastVocalMs > 0) {
+      const gapStart = lastVocalMs + 500;
+      if (!tooCloseToExisting(sections, gapStart)) {
+        sections.push({
+          label: "Instrumental",
+          type: "instrumental",
+          startMs: gapStart,
+          score: 95,
+        });
+      }
+    }
+    lastVocalMs = line.timeMs;
+  }
+
+  // --- Pass 3: Detect chorus by finding repeated line groups ---
+  const seenTexts = new Map<string, number>();
+  for (const line of lines) {
+    if (line.text && !SECTION_REGEX.test(line.text)) {
+      const norm = line.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+      if (norm.length > 5) seenTexts.set(norm, (seenTexts.get(norm) || 0) + 1);
+    }
+  }
+
+  const maxRepeat = Math.max(...seenTexts.values(), 1);
+  const chorusThreshold = Math.max(2, Math.ceil(maxRepeat * 0.7));
   let inChorusStreak = false;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Check for explicit section markers
-    const sectionMatch = line.text.match(SECTION_REGEX);
-    if (sectionMatch) {
-      const label = sectionMatch[1];
-      const type = classifySection(label);
-      sections.push({
-        label,
-        type,
-        startMs: line.timeMs,
-        score: scoreSection(type),
-      });
-      inChorusStreak = false;
-      lastTimeMs = line.timeMs;
-      continue;
-    }
-
-    // Detect instrumental gaps (>4s between lines)
-    if (line.timeMs - lastTimeMs > 4000 && lastTimeMs > 0) {
-      sections.push({
-        label: "Instrumental",
-        type: "instrumental",
-        startMs: lastTimeMs + 500,
-        score: 95,
-      });
-    }
-
-    // Detect chorus entry (first repeated line after non-repeated ones)
+  for (const line of lines) {
+    if (SECTION_REGEX.test(line.text)) continue;
     const norm = line.text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-    const isRepeatedLine = norm && (seenTexts.get(norm) || 0) >= chorusThreshold;
+    const isRepeated = norm.length > 5 && (seenTexts.get(norm) || 0) >= chorusThreshold;
 
-    if (isRepeatedLine && !inChorusStreak) {
-      // Check if this wasn't already labeled
-      const alreadyLabeled = sections.some(
-        s => Math.abs(s.startMs - line.timeMs) < 3000
-      );
-      if (!alreadyLabeled) {
+    if (isRepeated && !inChorusStreak) {
+      if (!tooCloseToExisting(sections, line.timeMs)) {
         sections.push({
           label: "Chorus",
           type: "chorus",
@@ -179,27 +193,62 @@ function sectionsFromSyncedLyrics(lines: LRCLine[], durationMs: number): SongSec
         });
       }
       inChorusStreak = true;
-    } else if (!isRepeatedLine) {
+    } else if (!isRepeated) {
       inChorusStreak = false;
     }
-
-    lastTimeMs = line.timeMs;
   }
 
-  // Add outro if last section is far from end
-  if (sections.length > 0) {
-    const lastSection = sections[sections.length - 1];
-    if (durationMs - lastSection.startMs > 30000) {
+  // --- Pass 4: Label non-chorus vocal sections as Verse ---
+  // Find large gaps between detected sections and add verse markers
+  const sorted = [...sections].sort((a, b) => a.startMs - b.startMs);
+  const verseCandidates: SongSection[] = [];
+  let verseNum = 1;
+
+  // Check gap from song start to first section
+  if (sorted.length > 0 && sorted[0].startMs > MIN_SECTION_GAP_MS * 2) {
+    verseCandidates.push({
+      label: `Verse ${verseNum++}`,
+      type: "verse",
+      startMs: Math.max(5000, sorted[0].startMs / 3),
+      score: scoreSection("verse"),
+    });
+  }
+
+  // Check gaps between sections
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const gap = sorted[i + 1].startMs - sorted[i].startMs;
+    if (gap > MIN_SECTION_GAP_MS * 2.5) {
+      const mid = sorted[i].startMs + gap * 0.4;
+      if (!tooCloseToExisting(sections, mid)) {
+        verseCandidates.push({
+          label: `Verse ${verseNum++}`,
+          type: "verse",
+          startMs: mid,
+          score: scoreSection("verse"),
+        });
+      }
+    }
+  }
+
+  sections.push(...verseCandidates);
+  addOutroIfNeeded(sections, durationMs);
+
+  return sections.sort((a, b) => a.startMs - b.startMs);
+}
+
+function addOutroIfNeeded(sections: SongSection[], durationMs: number) {
+  const last = sections.sort((a, b) => b.startMs - a.startMs)[0];
+  if (!last || durationMs - last.startMs > 30000) {
+    const outroStart = durationMs - 20000;
+    if (!tooCloseToExisting(sections, outroStart)) {
       sections.push({
         label: "Outro",
         type: "outro",
-        startMs: durationMs - 15000,
+        startMs: Math.max(0, outroStart),
         score: 90,
       });
     }
   }
-
-  return sections;
 }
 
 /**
