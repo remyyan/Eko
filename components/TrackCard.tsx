@@ -19,18 +19,7 @@ interface Track {
 }
 
 const keyNames = [
-  "C",
-  "C♯/D♭",
-  "D",
-  "D♯/E♭",
-  "E",
-  "F",
-  "F♯/G♭",
-  "G",
-  "G♯/A♭",
-  "A",
-  "A♯/B♭",
-  "B",
+  "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
 export default function TrackCard({
@@ -47,50 +36,34 @@ export default function TrackCard({
   return (
     <div
       onClick={() => onSelect(track)}
-      className={`cursor-pointer rounded-lg border-2 p-4 transition-all hover:shadow-lg ${
+      className={`cursor-pointer rounded-lg border p-3 transition-all hover:bg-[#161616] ${
         isSelected
-          ? "border-green-500 bg-green-50 dark:bg-green-950"
-          : "border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+          ? "border-red-500/50 bg-red-500/5"
+          : "border-[#222] bg-[#111]"
       }`}
     >
-      <div className="flex gap-4">
+      <div className="flex gap-3">
         <img
           src={track.album.images[0]?.url || "/placeholder.png"}
           alt={track.album.name}
-          className="h-20 w-20 rounded-md object-cover"
+          className="h-14 w-14 rounded object-cover flex-shrink-0"
         />
-        <div className="flex-1">
-          <h3 className="font-semibold text-gray-900 dark:text-white">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-medium text-sm text-white truncate">
             {track.name}
           </h3>
-          <p className="text-sm text-gray-600 dark:text-gray-400">
+          <p className="text-xs text-[#888] truncate">
             {track.artists.map((a) => a.name).join(", ")}
-          </p>
-          <p className="text-xs text-gray-500 dark:text-gray-500">
-            {track.album.name}
           </p>
 
           {showFeatures && track.audioFeatures && track.audioFeatures.tempo && (
-            <div className="mt-2">
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <span className="font-semibold">BPM:</span>{" "}
-                  {Math.round(track.audioFeatures.tempo)}
-                </div>
-                <div>
-                  <span className="font-semibold">Key:</span>{" "}
-                  {keyNames[track.audioFeatures.key] || "Unknown"}{" "}
-                  {track.audioFeatures.mode === 1 ? "Major" : "Minor"}
-                </div>
-                <div>
-                  <span className="font-semibold">Energy:</span>{" "}
-                  {Math.round(track.audioFeatures.energy * 100)}%
-                </div>
-                <div>
-                  <span className="font-semibold">Dance:</span>{" "}
-                  {Math.round(track.audioFeatures.danceability * 100)}%
-                </div>
-              </div>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-[#666] font-mono">
+              <span>{Math.round(track.audioFeatures.tempo)} BPM</span>
+              <span>
+                {keyNames[track.audioFeatures.key] || "?"}{" "}
+                {track.audioFeatures.mode === 1 ? "Maj" : "Min"}
+              </span>
+              <span>{Math.round(track.audioFeatures.energy * 100)}% E</span>
             </div>
           )}
         </div>
@@ -98,4 +71,3 @@ export default function TrackCard({
     </div>
   );
 }
-

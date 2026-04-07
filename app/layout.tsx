@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DJ Mashup Assistant - AI-Powered Song Mixing",
-  description: "Find perfect song combinations for DJ mashups using AI and Spotify",
+  title: "EKO — AI DJ Assistant",
+  description: "AI-powered DJ mixing with smart transitions, BPM matching, and real-time cue points",
 };
 
 export default function RootLayout({
