@@ -120,7 +120,7 @@ const GENRE_POOLS = [
 
 export async function POST(request: Request) {
   try {
-    const { track, count = 5, skipCache = false } = await request.json();
+    const { track, count = 5, skipCache = false, excludeIds = [], vibePrompt } = await request.json();
 
     if (!track) {
       return NextResponse.json({ error: "Track is required" }, { status: 400 });
@@ -145,6 +145,10 @@ export async function POST(request: Request) {
     const genrePool = GENRE_POOLS[Math.floor(Math.random() * GENRE_POOLS.length)];
     const overGenerateCount = Math.max(count * 3, 12);
 
+    const genreDirection = vibePrompt
+      ? `The user specifically wants: "${vibePrompt}". Focus ALL recommendations on this genre/vibe/style. Still suggest songs that a DJ could mix, but make sure they match what the user asked for.`
+      : `Give me a MIX of songs — some from ${genrePool}, and some from other genres that share a similar vibe or energy. Prioritize variety: different artists, different eras, different subgenres. Include both well-known and lesser-known tracks.`;
+
     const prompt = `You are a professional DJ building a set. I need ${overGenerateCount} song suggestions that could work after:
 
 "${track.name}" by ${track.artists[0]?.name}
@@ -152,7 +156,7 @@ export async function POST(request: Request) {
 - Key: ${keyName}
 - Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
 
-Give me a MIX of songs — some from ${genrePool}, and some from other genres that share a similar vibe or energy. Prioritize variety: different artists, different eras, different subgenres. Include both well-known and lesser-known tracks.
+${genreDirection}
 
 DO NOT focus on matching exact BPM or key — I will verify that myself. Just suggest songs with a similar feel, mood, or danceability that a DJ might mix together.
 
@@ -228,10 +232,11 @@ Respond ONLY with JSON (no markdown):
       if (candidates.length >= count * 2) break;
     }
 
-    // Deduplicate by video ID
+    // Deduplicate and exclude already-played tracks
+    const excludeSet = new Set<string>(excludeIds);
     const seen = new Set<string>();
     const unique = candidates.filter((c) => {
-      if (seen.has(c.id)) return false;
+      if (seen.has(c.id) || excludeSet.has(c.id)) return false;
       seen.add(c.id);
       return true;
     });

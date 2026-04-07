@@ -2,6 +2,83 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
 import Groq from "groq-sdk";
 
+const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+function keyName(k: number, mode?: number): string {
+  const note = KEY_NAMES[k] || "?";
+  return mode === 0 ? `${note}m` : note;
+}
+
+/**
+ * Compute beat-synced startTime (seconds before end) for a given
+ * number of transition beats at a given BPM.
+ */
+function beatsToSeconds(beats: number, bpm: number): number {
+  return Math.round((beats * 60) / bpm);
+}
+
+/**
+ * Rate each transition type based on actual audio features.
+ * Returns deterministic scores so the AI only needs to write the "reason" copy.
+ */
+function scoreTransitions(current: any, next: any) {
+  const bpm1 = current?.tempo || 120;
+  const bpm2 = next?.tempo || 120;
+  const bpmDiff = Math.abs(bpm1 - bpm2);
+  const e1 = current?.energy || 0.5;
+  const e2 = next?.energy || 0.5;
+  const eDiff = Math.abs(e1 - e2);
+  const avgBpm = (bpm1 + bpm2) / 2;
+
+  // Crossfade — best when tracks are similar
+  const crossfadeScore = Math.round(
+    Math.max(30, 95 - bpmDiff * 2.5 - eDiff * 40)
+  );
+  const crossfadeBeats = bpmDiff <= 5 && eDiff < 0.15 ? 32 : 16;
+
+  // Beat Match — best when BPMs are very close
+  const beatMatchScore = Math.round(
+    bpmDiff <= 3 ? 95 : bpmDiff <= 8 ? 80 : Math.max(25, 70 - bpmDiff * 3)
+  );
+
+  // Echo Fade — best when energy is dropping
+  const echoScore = Math.round(
+    e2 < e1 ? Math.min(90, 75 + (e1 - e2) * 50) : Math.max(35, 65 - eDiff * 30)
+  );
+
+  // Filter Sweep — best when energy is building
+  const sweepScore = Math.round(
+    e2 > e1 ? Math.min(90, 75 + (e2 - e1) * 50) : Math.max(35, 65 - eDiff * 30)
+  );
+
+  return [
+    {
+      name: "Crossfade",
+      rating: crossfadeScore,
+      startTime: beatsToSeconds(crossfadeBeats, avgBpm),
+      beats: crossfadeBeats,
+    },
+    {
+      name: "Beat Match",
+      rating: beatMatchScore,
+      startTime: beatsToSeconds(12, avgBpm),
+      beats: 12,
+    },
+    {
+      name: "Echo Fade",
+      rating: echoScore,
+      startTime: beatsToSeconds(16, avgBpm),
+      beats: 16,
+    },
+    {
+      name: "Filter Sweep",
+      rating: sweepScore,
+      startTime: beatsToSeconds(16, avgBpm),
+      beats: 16,
+    },
+  ];
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { currentTrack, nextTrack } = await request.json();
@@ -13,106 +90,66 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check cache first
     const cacheKey = `transition-${currentTrack.id}-${nextTrack.id}`;
     const cached = getCached(cacheKey);
     if (cached) {
-      console.log("Returning cached transition analysis");
       return NextResponse.json(cached);
     }
 
-    // Use Groq for AI analysis (much higher free tier limits!)
-    const groq = new Groq({
-      apiKey: process.env.GROQ_API_KEY,
-    });
+    const cf = currentTrack.audioFeatures;
+    const nf = nextTrack.audioFeatures;
 
-    const prompt = `You are a professional DJ analyzing a transition between two tracks.
+    // Compute scores deterministically
+    const scored = scoreTransitions(cf, nf);
+    const recommended = [...scored].sort((a, b) => b.rating - a.rating)[0].name;
 
-Current Track: "${currentTrack.name}" by ${currentTrack.artists[0]?.name}
-- BPM: ${Math.round(currentTrack.audioFeatures?.tempo || 0)}
-- Key: ${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][currentTrack.audioFeatures?.key] || currentTrack.audioFeatures?.key || "unknown"}
-- Energy: ${Math.round((currentTrack.audioFeatures?.energy || 0) * 100)}%
-- Danceability: ${Math.round((currentTrack.audioFeatures?.danceability || 0) * 100)}%
+    // Ask the LLM only for the creative "reason" text
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-Next Track: "${nextTrack.name}" by ${nextTrack.artists[0]?.name}
-- BPM: ${Math.round(nextTrack.audioFeatures?.tempo || 0)}
-- Key: ${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][nextTrack.audioFeatures?.key] || nextTrack.audioFeatures?.key || "unknown"}
-- Energy: ${Math.round((nextTrack.audioFeatures?.energy || 0) * 100)}%
-- Danceability: ${Math.round((nextTrack.audioFeatures?.danceability || 0) * 100)}%
+    const bpmDiff = Math.abs((cf?.tempo || 0) - (nf?.tempo || 0)).toFixed(1);
+    const prompt = `You are a professional DJ writing SHORT transition notes (1 sentence each).
 
-BPM Difference: ${Math.abs((currentTrack.audioFeatures?.tempo || 0) - (nextTrack.audioFeatures?.tempo || 0)).toFixed(1)} BPM
-Energy Difference: ${Math.abs((currentTrack.audioFeatures?.energy || 0) - (nextTrack.audioFeatures?.energy || 0)) * 100}%
+Current: "${currentTrack.name}" by ${currentTrack.artists[0]?.name} — ${Math.round(cf?.tempo || 0)} BPM, ${keyName(cf?.key, cf?.mode)}, ${Math.round((cf?.energy || 0) * 100)}% energy
+Next: "${nextTrack.name}" by ${nextTrack.artists[0]?.name} — ${Math.round(nf?.tempo || 0)} BPM, ${keyName(nf?.key, nf?.mode)}, ${Math.round((nf?.energy || 0) * 100)}% energy
+BPM gap: ${bpmDiff}
 
-Analyze these tracks and recommend the best transition techniques. For each technique, provide:
-1. A suitability rating (0-100%) - consider BPM compatibility, key harmony, and energy flow
-2. The optimal transition start time (in seconds before the current track ends)
-3. A brief reason why this technique works or doesn't work based on the audio features
-
-Consider these 4 transition techniques:
-- Crossfade: Smooth volume transition between tracks (best for similar energy/tempo)
-- Beat Match: Sync BPM and align beats for seamless mixing (best for close BPM values)
-- Echo Fade: Use echo effects to blend the tracks (works well with energy changes)
-- Filter Sweep: Use frequency filters to transition (good for building tension)
+For each technique, write ONE sentence explaining why it works or doesn't for THIS specific pair. Be specific — mention the songs by name, reference the BPM/key/energy relationship.
 
 Respond ONLY with JSON (no markdown):
 {
-  "transitions": [
-    {
-      "name": "Crossfade",
-      "rating": 85,
-      "startTime": 15,
-      "reason": "Similar energy levels make for smooth crossfade"
-    },
-    {
-      "name": "Beat Match",
-      "rating": 70,
-      "startTime": 20,
-      "reason": "BPM difference is manageable"
-    },
-    {
-      "name": "Echo Fade",
-      "rating": 60,
-      "startTime": 12,
-      "reason": "Works but not ideal for this genre"
-    },
-    {
-      "name": "Filter Sweep",
-      "rating": 75,
-      "startTime": 18,
-      "reason": "Good for building tension"
-    }
-  ],
-  "recommended": "Crossfade"
+  "reasons": {
+    "Crossfade": "...",
+    "Beat Match": "...",
+    "Echo Fade": "...",
+    "Filter Sweep": "..."
+  }
 }`;
 
-    let analysis;
-
+    let reasons: Record<string, string> = {};
     try {
       const result = await groq.chat.completions.create({
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+        messages: [{ role: "user", content: prompt }],
         model: "llama-3.3-70b-versatile",
         temperature: 0.7,
-        max_tokens: 500,
+        max_tokens: 400,
       });
-
       const text = result.choices[0]?.message?.content || "";
-
-      // Remove markdown code blocks if present
-      const cleanText = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      analysis = JSON.parse(cleanText);
-    } catch (aiError: any) {
-      console.error("Groq API error:", aiError);
-      throw aiError;
+      const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const parsed = JSON.parse(clean);
+      reasons = parsed.reasons || {};
+    } catch {
+      // Fall back to generic reasons if AI fails
     }
 
-    // Cache the result
-    setCache(cacheKey, analysis);
+    const analysis = {
+      transitions: scored.map((t) => ({
+        ...t,
+        reason: reasons[t.name] || `${t.name} transition over ${t.beats} beats`,
+      })),
+      recommended,
+    };
 
+    setCache(cacheKey, analysis);
     return NextResponse.json(analysis);
   } catch (error) {
     console.error("Transition analysis error:", error);

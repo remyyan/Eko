@@ -1,6 +1,14 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import {
+  crossfadeSchedule,
+  beatMatchSchedule,
+  echoFadeSchedule,
+  filterSweepSchedule,
+  type TransitionSchedule,
+} from "@/lib/transitionEngine";
+import TransitionWaveform from "@/components/TransitionWaveform";
 
 interface Track {
   id: string;
@@ -49,14 +57,19 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [duration, setDuration] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionProgress, setTransitionProgress] = useState(0);
+  const [activeTransitionType, setActiveTransitionType] = useState<string>("Crossfade");
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
   const [selectedTransition, setSelectedTransition] = useState<any | null>(null);
   const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
+  const [vibePrompt, setVibePrompt] = useState("");
+  const [manualSearch, setManualSearch] = useState("");
+  const [manualResults, setManualResults] = useState<Track[]>([]);
+  const [manualLoading, setManualLoading] = useState(false);
   const lastTransitionPairRef = useRef<string>("");
   const playerAContainerRef = useRef<HTMLDivElement>(null);
   const playerBContainerRef = useRef<HTMLDivElement>(null);
   const positionIntervalRef = useRef<any>(null);
-  const audioAnalyzerRef = useRef<ReturnType<typeof getAudioAnalyzer> | null>(null);
+  const audioAnalyzerRef = useRef<any>(null);
   const [isAnalyzingAudio, setIsAnalyzingAudio] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
 
@@ -217,6 +230,41 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     getRecommendations();
   }, [currentIndex, queue]);
 
+  const searchManualTrack = async () => {
+    const q = manualSearch.trim();
+    if (!q) return;
+
+    setManualLoading(true);
+    try {
+      const res = await fetch(`/api/youtube/search?q=${encodeURIComponent(q)}`);
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      const items: Track[] = data.tracks?.items || [];
+
+      // Fetch audio features for each result in parallel
+      const withFeatures = await Promise.all(
+        items.slice(0, 6).map(async (track) => {
+          try {
+            const artistName = track.artists?.[0]?.name || "";
+            const featRes = await fetch(
+              `/api/audio-features?id=${track.id}&name=${encodeURIComponent(track.name)}&artist=${encodeURIComponent(artistName)}`
+            );
+            if (featRes.ok) {
+              const features = await featRes.json();
+              return { ...track, audioFeatures: features };
+            }
+          } catch {}
+          return track;
+        })
+      );
+      setManualResults(withFeatures);
+    } catch (error) {
+      console.error("Manual search failed:", error);
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   const fetchRecommendationList = async (skipCache = false) => {
     const current = queue[currentIndex];
     if (!current) return;
@@ -225,6 +273,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     console.log("Fetching recommendation list for:", current.name, skipCache ? "(fresh)" : "");
 
     try {
+      const playedIds = queue.map(q => q.id);
       const res = await fetch("/api/mashup/recommend-list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -232,6 +281,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           track: current,
           count: 8,
           skipCache,
+          excludeIds: playedIds,
+          vibePrompt: vibePrompt.trim() || undefined,
         }),
       });
       
@@ -347,9 +398,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     const trackToAdd = track || nextTrack;
     if (!trackToAdd) return;
 
-    // Check if track is already in queue
-    if (queue.find(t => t.id === trackToAdd.id)) {
-      alert("This track is already in the queue!");
+    // Only block if it's already upcoming in the queue (not already played)
+    const upcomingQueue = queue.slice(currentIndex + 1);
+    if (upcomingQueue.find(t => t.id === trackToAdd.id)) {
+      alert("This track is already coming up in the queue!");
       return;
     }
 
@@ -413,56 +465,101 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
     setIsTransitioning(true);
     setTransitionProgress(0);
-    setSelectedTransition(null); // Clear selection after execution
+    setActiveTransitionType(transition.name);
+    setSelectedTransition(null);
     console.log(`Executing ${transition.name} transition`);
 
     try {
-      // Determine which track to play next
       let trackToPlay = nextTrack;
       if (currentIndex < queue.length - 1) {
-        const nextIdx = currentIndex + 1;
-        trackToPlay = queue[nextIdx];
+        trackToPlay = queue[currentIndex + 1];
       }
 
-      // Get current and next players
       const currentPlayer = activePlayer === 'A' ? playerA : playerB;
       const nextPlayer = activePlayer === 'A' ? playerB : playerA;
+      const currentTrack = queue[currentIndex];
 
-      // Calculate transition start time
-      const transitionStartTime = duration - (transition.startTime * 1000);
+      // Use BPM for beat-synced timing (fall back to 120 if unknown)
+      const bpm = currentTrack?.audioFeatures?.tempo || 120;
 
-      // Seek to transition point if not already there
-      if (position < transitionStartTime - 1000) {
-        console.log(`Seeking to ${transition.startTime}s before end`);
-        currentPlayer.seekTo(transitionStartTime / 1000, true);
+      // Build the volume schedule from the transition engine
+      let schedule: TransitionSchedule;
+      switch (transition.name) {
+        case "Beat Match":
+          schedule = beatMatchSchedule(bpm);
+          break;
+        case "Echo Fade":
+          schedule = echoFadeSchedule(bpm);
+          break;
+        case "Filter Sweep":
+          schedule = filterSweepSchedule(bpm);
+          break;
+        case "Crossfade":
+        default:
+          schedule = crossfadeSchedule(bpm);
+          break;
+      }
+
+      // Seek the outgoing track so the transition ends when the track ends
+      const transitionSec = schedule.totalDurationMs / 1000;
+      const seekTarget = (duration / 1000) - transitionSec;
+      if (position / 1000 < seekTarget - 1) {
+        console.log(`Seeking to ${seekTarget.toFixed(1)}s (${transitionSec.toFixed(1)}s before end, ${schedule.transitionBeats} beats @ ${bpm} BPM)`);
+        currentPlayer.seekTo(seekTarget, true);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      // Load next track in the inactive player
+      // Load + cue the incoming track
       console.log("Loading next track:", trackToPlay.name);
       nextPlayer.loadVideoById(trackToPlay.id);
       nextPlayer.setVolume(0);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 600));
 
-      // Execute transition based on type
-      switch (transition.name) {
-        case "Crossfade":
-          await executeCrossfade(currentPlayer, nextPlayer, transition.startTime);
-          break;
-        case "Beat Match":
-          await executeBeatMatch(currentPlayer, nextPlayer, transition.startTime);
-          break;
-        case "Echo Fade":
-          await executeEchoFade(currentPlayer, nextPlayer, transition.startTime);
-          break;
-        case "Filter Sweep":
-          await executeFilterSweep(currentPlayer, nextPlayer, transition.startTime);
-          break;
-        default:
-          await executeCrossfade(currentPlayer, nextPlayer, transition.startTime);
+      // If the schedule specifies a cue offset, seek the incoming track past its intro
+      if (schedule.incomingCueOffsetMs > 0) {
+        nextPlayer.seekTo(schedule.incomingCueOffsetMs / 1000, true);
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
 
-      // Update state
+      // Start the incoming track
+      nextPlayer.playVideo();
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Execute the frame-by-frame volume schedule
+      const startTime = performance.now();
+      let frameIdx = 0;
+
+      while (frameIdx < schedule.frames.length) {
+        const elapsed = performance.now() - startTime;
+        // Advance to the frame that matches current elapsed time
+        while (
+          frameIdx < schedule.frames.length - 1 &&
+          schedule.frames[frameIdx + 1].timeMs <= elapsed
+        ) {
+          frameIdx++;
+        }
+
+        const frame = schedule.frames[frameIdx];
+        currentPlayer.setVolume(frame.outVol);
+        nextPlayer.setVolume(frame.inVol);
+        setTransitionProgress(frame.progress);
+
+        if (frameIdx >= schedule.frames.length - 1) break;
+
+        // Wait until next frame
+        const nextFrame = schedule.frames[Math.min(frameIdx + 1, schedule.frames.length - 1)];
+        const waitMs = Math.max(10, nextFrame.timeMs - elapsed);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        frameIdx++;
+      }
+
+      // Clean finish
+      currentPlayer.setVolume(0);
+      nextPlayer.setVolume(100);
+      currentPlayer.pauseVideo();
+      currentPlayer.seekTo(0, true);
+
+      // Update queue state
       if (currentIndex < queue.length - 1) {
         setCurrentIndex(currentIndex + 1);
       } else {
@@ -470,136 +567,29 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         setCurrentIndex(prevIdx => prevIdx + 1);
       }
 
-      // Switch active player
       setActivePlayer(activePlayer === 'A' ? 'B' : 'A');
       setDuration(nextPlayer.getDuration() * 1000);
 
-      // Update position to match the new active player
       try {
-        const currentTime = nextPlayer.getCurrentTime();
-        setPosition(currentTime * 1000);
-        console.log(`Position synced to new player: ${currentTime}s`);
-      } catch (error) {
-        console.error("Failed to get current time:", error);
+        setPosition(nextPlayer.getCurrentTime() * 1000);
+      } catch {
         setPosition(0);
       }
 
-      console.log("Transition complete!");
+      console.log(`Transition complete (${schedule.transitionBeats} beats, ${(schedule.totalDurationMs / 1000).toFixed(1)}s)`);
       setIsTransitioning(false);
       setTransitionProgress(0);
     } catch (error) {
       console.error("Transition failed:", error);
-      // Reset volumes
       try {
         playerA.setVolume(100);
         playerB.setVolume(0);
-      } catch (e) {
-        // Ignore
+      } catch {
+        // ignore
       }
       setIsTransitioning(false);
       setTransitionProgress(0);
     }
-  };
-
-  // Crossfade: Smooth volume transition
-  const executeCrossfade = async (currentPlayer: any, nextPlayer: any, duration: number) => {
-    const steps = 40;
-    const interval = (duration * 1000) / steps;
-
-    nextPlayer.playVideo();
-
-    for (let i = 0; i <= steps; i++) {
-      const progress = i / steps;
-      setTransitionProgress(progress * 100);
-
-      currentPlayer.setVolume(100 * (1 - progress));
-      nextPlayer.setVolume(100 * progress);
-
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    currentPlayer.pauseVideo();
-    currentPlayer.seekTo(0, true);
-  };
-
-  // Beat Match: Quick cut with volume swell
-  const executeBeatMatch = async (currentPlayer: any, nextPlayer: any, duration: number) => {
-    const steps = 20;
-    const interval = (duration * 1000) / steps;
-
-    // Quick fade out
-    for (let i = 0; i <= steps / 2; i++) {
-      const progress = i / (steps / 2);
-      setTransitionProgress(progress * 50);
-      currentPlayer.setVolume(100 * (1 - progress));
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    // Start next track
-    nextPlayer.setVolume(0);
-    nextPlayer.playVideo();
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    // Quick fade in
-    for (let i = 0; i <= steps / 2; i++) {
-      const progress = i / (steps / 2);
-      setTransitionProgress(50 + progress * 50);
-      nextPlayer.setVolume(100 * progress);
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    currentPlayer.pauseVideo();
-    currentPlayer.seekTo(0, true);
-  };
-
-  // Echo Fade: Gradual fade with overlap
-  const executeEchoFade = async (currentPlayer: any, nextPlayer: any, duration: number) => {
-    const steps = 50;
-    const interval = (duration * 1000) / steps;
-
-    // Start next track early at low volume
-    nextPlayer.setVolume(10);
-    nextPlayer.playVideo();
-
-    for (let i = 0; i <= steps; i++) {
-      const progress = i / steps;
-      setTransitionProgress(progress * 100);
-
-      // Exponential fade out for current
-      currentPlayer.setVolume(100 * Math.pow(1 - progress, 2));
-      // Exponential fade in for next
-      nextPlayer.setVolume(100 * Math.pow(progress, 0.5));
-
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    currentPlayer.pauseVideo();
-    currentPlayer.seekTo(0, true);
-  };
-
-  // Filter Sweep: Simulate filter effect with volume curves
-  const executeFilterSweep = async (currentPlayer: any, nextPlayer: any, duration: number) => {
-    const steps = 30;
-    const interval = (duration * 1000) / steps;
-
-    nextPlayer.playVideo();
-
-    for (let i = 0; i <= steps; i++) {
-      const progress = i / steps;
-      setTransitionProgress(progress * 100);
-
-      // Create a "sweep" effect with volume
-      const currentVol = 100 * (1 - progress) * (1 - Math.sin(progress * Math.PI / 2));
-      const nextVol = 100 * progress * Math.sin(progress * Math.PI / 2);
-
-      currentPlayer.setVolume(Math.max(0, currentVol));
-      nextPlayer.setVolume(Math.min(100, nextVol));
-
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    currentPlayer.pauseVideo();
-    currentPlayer.seekTo(0, true);
   };
 
   return (
@@ -608,26 +598,137 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       <div ref={playerAContainerRef} style={{ display: "none" }}></div>
       <div ref={playerBContainerRef} style={{ display: "none" }}></div>
 
-      {/* Left Section: Prompt */}
-      <div className="w-64 border-r border-gray-700 flex flex-col p-4">
-        <h2 className="text-lg font-bold mb-2">AI Prompt</h2>
-        <p className="text-xs text-gray-400 mb-3">
-          Describe the vibe or style you want for recommendations
-        </p>
-        <textarea
-          placeholder="e.g., 'upbeat party vibes' or 'smooth chill transition'..."
-          className="w-full h-32 bg-gray-800 border border-gray-700 p-3 text-sm resize-none focus:outline-none focus:border-gray-600 rounded"
-          disabled
-        />
-        <button 
-          className="w-full mt-3 bg-gray-700 text-gray-500 px-4 py-2 text-sm font-semibold rounded cursor-not-allowed"
-          disabled
-        >
-          Coming Soon
-        </button>
-        <p className="text-xs text-gray-500 mt-2 text-center">
-          Feature in development
-        </p>
+      {/* Left Section: AI Prompt + Manual Search */}
+      <div className="w-72 border-r border-gray-700 flex flex-col">
+        {/* AI Prompt */}
+        <div className="p-4 border-b border-gray-800">
+          <h2 className="text-sm font-bold mb-2 text-gray-300">AI Prompt</h2>
+          <textarea
+            value={vibePrompt}
+            onChange={(e) => setVibePrompt(e.target.value)}
+            placeholder="e.g., 'k-pop', 'chill R&B', '90s hip hop'..."
+            className="w-full h-16 bg-gray-800 border border-gray-700 p-2.5 text-sm resize-none focus:outline-none focus:border-purple-600 rounded placeholder:text-gray-600"
+          />
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => fetchRecommendationList(true)}
+              disabled={loadingRecommendations}
+              className="flex-1 bg-purple-600 text-white px-3 py-1.5 text-xs font-semibold rounded hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loadingRecommendations ? "..." : "Apply"}
+            </button>
+            {vibePrompt.trim() && (
+              <button
+                onClick={() => {
+                  setVibePrompt("");
+                  fetchRecommendationList(true);
+                }}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-white bg-gray-800 rounded transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Manual Song Search */}
+        <div className="p-4 flex-1 flex flex-col min-h-0">
+          <h2 className="text-sm font-bold mb-2 text-gray-300">Search Songs</h2>
+          <div className="flex gap-2 mb-3">
+            <input
+              type="text"
+              value={manualSearch}
+              onChange={(e) => setManualSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && searchManualTrack()}
+              placeholder="Search by title or artist..."
+              className="flex-1 bg-gray-800 border border-gray-700 px-3 py-2 text-sm rounded focus:outline-none focus:border-purple-600 placeholder:text-gray-600"
+            />
+            <button
+              onClick={searchManualTrack}
+              disabled={manualLoading || !manualSearch.trim()}
+              className="px-3 py-2 bg-gray-700 text-white text-sm rounded hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {manualLoading ? "..." : "Go"}
+            </button>
+          </div>
+
+          {/* Search Results */}
+          <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0">
+            {manualResults.map((track) => {
+              const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+              const af = track.audioFeatures;
+              const isUpcoming = queue.slice(currentIndex).some(q => q.id === track.id);
+
+              return (
+                <div
+                  key={track.id}
+                  className="bg-gray-800/60 rounded-lg p-2.5 border border-gray-700/50 hover:border-gray-600 transition-colors"
+                >
+                  <div className="flex items-start gap-2">
+                    {track.album?.images?.[0]?.url && (
+                      <img
+                        src={track.album.images[0].url}
+                        alt=""
+                        className="w-10 h-10 rounded flex-shrink-0 object-cover"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold truncate">{track.name}</p>
+                      <p className="text-[10px] text-gray-400 truncate">
+                        {track.artists?.map(a => a.name).join(", ")}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Audio Features */}
+                  {af && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5 text-[10px] text-gray-400">
+                      {af.tempo && (
+                        <span>{Math.round(af.tempo)} BPM</span>
+                      )}
+                      {af.key != null && (
+                        <span>Key: {KEY_NAMES[af.key] || "?"}{af.mode === 0 ? "m" : ""}</span>
+                      )}
+                      {af.energy != null && (
+                        <span>Energy: {Math.round(af.energy * 100)}%</span>
+                      )}
+                      {af.danceability != null && (
+                        <span>Dance: {Math.round(af.danceability * 100)}%</span>
+                      )}
+                      {af.source && (
+                        <span className={af.source === "reccobeats" ? "text-green-500" : "text-yellow-600"}>
+                          {af.source === "reccobeats" ? "✓ Real" : "~ Est."}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => addToQueue(track)}
+                    disabled={isUpcoming}
+                    className={`w-full mt-2 px-2 py-1 text-xs font-medium rounded transition-colors ${
+                      isUpcoming
+                        ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                        : "bg-purple-600/80 text-white hover:bg-purple-500"
+                    }`}
+                  >
+                    {isUpcoming ? "✓ In Queue" : "+ Add to Queue"}
+                  </button>
+                </div>
+              );
+            })}
+            {manualResults.length === 0 && !manualLoading && (
+              <p className="text-xs text-gray-600 text-center py-4">
+                Search for a song to add it to your queue
+              </p>
+            )}
+            {manualLoading && (
+              <div className="flex justify-center py-6">
+                <div className="w-5 h-5 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Center Section */}
@@ -761,27 +862,20 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Transition Progress */}
-              {isTransitioning && (
-                <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center flex-shrink-0 animate-pulse">
-                      <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold mb-1">Transitioning...</p>
-                      <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-purple-600 to-pink-600 transition-all duration-300"
-                          style={{ width: `${transitionProgress}%` }}
-                        />
-                      </div>
-                      <p className="text-xs text-gray-400 mt-1">{Math.round(transitionProgress)}% complete</p>
-                    </div>
-                  </div>
-                </div>
+              {/* Waveform Visualization — shows preview when a type is selected, live during transition */}
+              {nextTrack && (
+                <TransitionWaveform
+                  currentTrackName={currentTrack?.name || ""}
+                  nextTrackName={nextTrack?.name || ""}
+                  bpm={currentTrack?.audioFeatures?.tempo || 120}
+                  transitionType={
+                    isTransitioning
+                      ? activeTransitionType
+                      : selectedTransition?.name || transitionRecommendations[0]?.name || "Crossfade"
+                  }
+                  progress={transitionProgress}
+                  isLive={isTransitioning}
+                />
               )}
 
               {/* Transition Controls */}
@@ -937,7 +1031,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             ) : (
               <div className="space-y-1">
                 {recommendedTracks.map((track, index) => {
-                  const isInQueue = queue.some(q => q.id === track.id);
+                  const isInQueue = queue.slice(currentIndex).some(q => q.id === track.id);
                   
                   return (
                     <div
