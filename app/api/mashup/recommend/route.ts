@@ -3,6 +3,7 @@ import { getCached, setCache } from "@/lib/cache";
 import Groq from "groq-sdk";
 import { searchYouTubeMusic } from "@/lib/youtube";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
+import { getVideoDetails } from "@/lib/videoDetails";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -122,10 +123,7 @@ JSON only: {"recommendations":[{"artist":"name","song":"name","reason":"brief re
           audioFeatures = spotifyData.features;
           albumImage = spotifyData.track?.album?.images?.[0]?.url || "";
         } else {
-          const resp = await fetch(
-            `${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/youtube/video-details?id=${song.videoId}`
-          );
-          audioFeatures = await resp.json();
+          audioFeatures = await getVideoDetails(song.videoId);
         }
 
         const score = scoreCandidateFeatures(track.audioFeatures, audioFeatures);

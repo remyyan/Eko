@@ -1,6 +1,4 @@
-import { YTMusic, type SearchResult } from "ytmusic-ts";
-
-export type { SearchResult };
+import { YTMusic } from "ytmusic-ts";
 
 export interface YouTubeSearchResult {
   videoId: string;
@@ -18,10 +16,6 @@ function getYTMusic(): YTMusic {
   return ytmusicInstance;
 }
 
-/**
- * Search YouTube Music for songs. Uses the YouTube Music internal API
- * which returns proper song results (no lyric videos, fan edits, etc.).
- */
 export async function searchYouTubeMusic(
   query: string,
   maxResults = 5
@@ -29,12 +23,12 @@ export async function searchYouTubeMusic(
   const ytmusic = getYTMusic();
   const results = await ytmusic.search(query, "songs", null, maxResults);
 
-  return results.map((song: SearchResult) => ({
+  return (results as any[]).map((song) => ({
     videoId: song.videoId || "",
     name: song.title || "",
     artist: {
       name: song.artists?.[0]?.name || "Unknown Artist",
     },
-    thumbnails: (song.thumbnails || []).map((t) => ({ url: t.url })),
+    thumbnails: (song.thumbnails || []).map((t: any) => ({ url: t.url })),
   }));
 }

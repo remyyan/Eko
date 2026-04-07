@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
+import { getVideoDetails } from "@/lib/videoDetails";
 
 /**
  * Get audio features - ReccoBeats only, no Spotify fallback
@@ -34,15 +35,7 @@ export async function GET(request: Request) {
     }
 
     // Fallback: YouTube estimates only
-    const youtubeResponse = await fetch(
-      `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/youtube/video-details?id=${videoId}`
-    );
-
-    if (!youtubeResponse.ok) {
-      throw new Error("YouTube video details failed");
-    }
-
-    const features = await youtubeResponse.json();
+    const features = await getVideoDetails(videoId);
     
     return NextResponse.json({
       ...features,

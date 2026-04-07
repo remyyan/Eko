@@ -3,6 +3,7 @@ import { getCached, setCache } from "@/lib/cache";
 import Groq from "groq-sdk";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
 import { searchYouTubeMusic } from "@/lib/youtube";
+import { getVideoDetails } from "@/lib/videoDetails";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -103,10 +104,8 @@ async function fetchTrackFeatures(
   if (spotifyData?.features) {
     return { features: spotifyData.features, albumImage: spotifyData.track?.album?.images?.[0]?.url || "" };
   }
-  const resp = await fetch(
-    `${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/youtube/video-details?id=${videoId}`
-  );
-  return { features: await resp.json(), albumImage: "" };
+  const features = await getVideoDetails(videoId);
+  return { features, albumImage: "" };
 }
 
 /**
