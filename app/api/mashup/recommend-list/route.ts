@@ -188,8 +188,8 @@ export async function POST(request: Request) {
 
           const recommendedTrack: Track = {
             id: song.videoId,
-            name: rec.song,
-            artists: [{ name: rec.artist }],
+            name: song.name,
+            artists: [{ name: song.artist.name }],
             album: {
               images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }],
             },

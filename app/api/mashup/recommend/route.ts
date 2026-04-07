@@ -134,8 +134,8 @@ JSON only: {"recommendations":[{"artist":"name","song":"name","reason":"brief re
           bestCandidate = {
             track: {
               id: song.videoId,
-              name: rec.song,
-              artists: [{ name: rec.artist }],
+              name: song.name,
+              artists: [{ name: song.artist.name }],
               album: { images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }] },
               audioFeatures,
             },

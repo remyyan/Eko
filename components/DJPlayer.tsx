@@ -86,10 +86,54 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const player = activePlayer === 'A' ? playerA : playerB;
   const playerReady = playersReady[activePlayer];
 
-  const cuePoints = useMemo(
-    () => generateCuePoints(duration, currentTrack?.audioFeatures?.tempo || 120),
-    [duration, currentTrack?.audioFeatures?.tempo]
-  );
+  const [songSections, setSongSections] = useState<CuePoint[]>([]);
+  const [structureSource, setStructureSource] = useState<string>("none");
+
+  // Fetch real song structure from lyrics when track changes
+  useEffect(() => {
+    if (!currentTrack || !duration) return;
+
+    const trackName = currentTrack.name;
+    const artistName = currentTrack.artists?.[0]?.name || "";
+
+    const fetchStructure = async () => {
+      try {
+        const res = await fetch(
+          `/api/song-structure?track=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}&duration=${Math.round(duration)}`
+        );
+        if (!res.ok) throw new Error("Failed to fetch structure");
+        const data = await res.json();
+
+        if (data.sections && data.sections.length > 0) {
+          const sec = Math.round(duration / 1000);
+          setSongSections(
+            data.sections.map((s: any) => ({
+              positionMs: s.startMs,
+              label: `${s.label} · ${Math.floor(s.startMs / 60000)}:${(Math.floor(s.startMs / 1000) % 60).toString().padStart(2, "0")}`,
+              type: s.type,
+              color: s.color,
+              score: s.score,
+            }))
+          );
+          setStructureSource(data.source);
+          console.log(`Got song structure (${data.source}): ${data.sections.length} sections`);
+        } else {
+          setSongSections([]);
+          setStructureSource("none");
+        }
+      } catch {
+        setSongSections([]);
+        setStructureSource("none");
+      }
+    };
+
+    fetchStructure();
+  }, [currentTrack?.id, duration > 0]);
+
+  // Use real sections if available, otherwise fall back to phrase math
+  const cuePoints = songSections.length > 0
+    ? songSections
+    : generateCuePoints(duration, currentTrack?.audioFeatures?.tempo || 120);
 
   // Load YouTube IFrame API and initialize dual players
   useEffect(() => {
@@ -857,6 +901,17 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             </div>
 
             {/* Playback Bar with Cue Points */}
+            <div className="flex items-center justify-end mb-0.5">
+              <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                structureSource === "synced_lyrics" ? "text-green-400 bg-green-950" :
+                structureSource === "plain_lyrics" ? "text-yellow-400 bg-yellow-950" :
+                "text-gray-500 bg-gray-800"
+              }`}>
+                {structureSource === "synced_lyrics" ? "✓ Real sections (synced lyrics)" :
+                 structureSource === "plain_lyrics" ? "~ Sections (lyrics)" :
+                 "~ Estimated phrases"}
+              </span>
+            </div>
             <CuePointBar
               position={position}
               duration={duration}

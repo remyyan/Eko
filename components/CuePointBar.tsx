@@ -5,7 +5,7 @@ import { useMemo, useRef, useCallback } from "react";
 export interface CuePoint {
   positionMs: number;
   label: string;
-  type: "phrase" | "drop" | "breakdown" | "outro" | "custom";
+  type: "phrase" | "drop" | "breakdown" | "outro" | "custom" | "intro" | "verse" | "chorus" | "prechorus" | "bridge" | "instrumental" | "hook" | "other";
   color: string;
   /** Transition quality score 0-100. Higher = better place to start a transition. */
   score?: number;
