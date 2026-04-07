@@ -286,7 +286,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     };
   }, []);
 
-  // Update position regularly while playing
+  // Update position regularly — always poll, don't gate on isPlaying
   useEffect(() => {
     if (!player || !playerReady) return;
 
@@ -294,25 +294,27 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       clearInterval(positionIntervalRef.current);
     }
 
-    console.log(`Starting position tracking for player ${activePlayer}`);
-
     positionIntervalRef.current = setInterval(() => {
       try {
-        if (player && player.getCurrentTime && isPlaying) {
-          const currentTime = player.getCurrentTime();
-          setPosition(currentTime * 1000);
+        if (player?.getCurrentTime) {
+          const t = player.getCurrentTime();
+          if (typeof t === "number" && t >= 0) setPosition(t * 1000);
         }
-      } catch (error) {
-        // Silently ignore errors - player might not be ready yet
+        if (player?.getDuration) {
+          const d = player.getDuration();
+          if (typeof d === "number" && d > 0) setDuration(d * 1000);
+        }
+      } catch {
+        // Player might not be ready yet
       }
-    }, 100);
+    }, 150);
 
     return () => {
       if (positionIntervalRef.current) {
         clearInterval(positionIntervalRef.current);
       }
     };
-  }, [player, playerReady, isPlaying, activePlayer]);
+  }, [player, playerReady, activePlayer]);
 
   // Get next track recommendations (multiple tracks with ratings)
   useEffect(() => {
@@ -853,135 +855,136 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       </div>
 
       {/* Center Section */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* Top: Album photo/name + Music player */}
-        <div className="border-b border-gray-700 p-6 flex items-start gap-6">
-          {/* Album Art */}
-          {currentTrack?.album?.images?.[0]?.url && (
-            <img
-              src={currentTrack.album.images[0].url}
-              alt={currentTrack.name}
-              className="w-40 h-40 rounded"
-            />
-          )}
-
-          {/* Track Info & Player Controls */}
-          <div className="flex-1">
-            <h2 className="text-2xl font-bold mb-1">{currentTrack?.name}</h2>
-            <p className="text-lg text-gray-400 mb-2">
-              {currentTrack?.artists.map(a => a.name).join(", ")}
-            </p>
-
-            {/* Audio Features Display */}
-            {currentTrack?.audioFeatures && (
-              <div className="mb-4">
-                <div className="flex gap-4 text-xs mb-1">
-                  <div className="bg-gray-800 px-3 py-1.5 rounded">
-                    <span className="text-gray-400">BPM:</span>{" "}
-                    <span className="text-white font-semibold">
-                      {Math.round(currentTrack.audioFeatures.tempo)}
-                    </span>
-                  </div>
-                  <div className="bg-gray-800 px-3 py-1.5 rounded">
-                    <span className="text-gray-400">Key:</span>{" "}
-                    <span className="text-white font-semibold">
-                      {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][currentTrack.audioFeatures.key] || currentTrack.audioFeatures.key}
-                    </span>
-                  </div>
-                  <div className="bg-gray-800 px-3 py-1.5 rounded">
-                    <span className="text-gray-400">Energy:</span>{" "}
-                    <span className="text-white font-semibold">
-                      {Math.round(currentTrack.audioFeatures.energy * 100)}%
-                    </span>
-                  </div>
-                  <div className="bg-gray-800 px-3 py-1.5 rounded">
-                    <span className="text-gray-400">Dance:</span>{" "}
-                    <span className="text-white font-semibold">
-                      {Math.round(currentTrack.audioFeatures.danceability * 100)}%
-                    </span>
-                  </div>
-                </div>
-                {/* Source indicator */}
-                {currentTrack.audioFeatures.source && (
-                  <div className="text-xs">
-                    {currentTrack.audioFeatures.source === 'reccobeats' ? (
-                      <span className="text-green-400">✓ ReccoBeats audio analysis</span>
-                    ) : (
-                      <span className="text-yellow-400">⚠ Estimated features</span>
-                    )}
-                  </div>
-                )}
-              </div>
+        <div className="border-b border-gray-700 p-6">
+          <div className="flex items-start gap-6 mb-4">
+            {/* Album Art */}
+            {currentTrack?.album?.images?.[0]?.url && (
+              <img
+                src={currentTrack.album.images[0].url}
+                alt={currentTrack.name}
+                className="w-32 h-32 rounded flex-shrink-0"
+              />
             )}
 
-            {/* Playback Controls */}
-            <div className="flex items-center gap-3 mb-4">
-              <button
-                onClick={togglePlayPause}
-                disabled={!playerReady}
-                className="bg-white text-black px-6 py-2 font-semibold hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded"
-              >
-                {isPlaying ? "Pause" : "Play"}
-              </button>
-              <button
-                onClick={skipToNext}
-                disabled={!nextTrack}
-                className="bg-gray-800 text-white px-6 py-2 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
-              >
-                Skip
-              </button>
-              <button
-                onClick={async () => {
-                  await stopPlayback();
-                  onStop();
-                }}
-                className="bg-gray-800 text-white px-6 py-2 hover:bg-gray-700 rounded"
-              >
-                Stop
-              </button>
-              {!playerReady && (
-                <span className="text-sm text-gray-400">Initializing...</span>
-              )}
-              {isTransitioning && (
-                <span className="text-sm text-gray-400">Transitioning...</span>
-              )}
-            </div>
+            {/* Track Info & Player Controls */}
+            <div className="flex-1 min-w-0">
+              <h2 className="text-2xl font-bold mb-1 truncate">{currentTrack?.name}</h2>
+              <p className="text-lg text-gray-400 mb-2 truncate">
+                {currentTrack?.artists.map(a => a.name).join(", ")}
+              </p>
 
-            {/* Playback Bar with Cue Points */}
-            <div className="flex items-center justify-end mb-0.5">
-              <span className={`text-[9px] px-1.5 py-0.5 rounded ${
-                structureSource === "synced_lyrics" ? "text-green-400 bg-green-950" :
-                structureSource === "plain_lyrics" ? "text-yellow-400 bg-yellow-950" :
-                "text-gray-500 bg-gray-800"
-              }`}>
-                {structureSource === "synced_lyrics" ? "✓ Real sections (synced lyrics)" :
-                 structureSource === "plain_lyrics" ? "~ Sections (lyrics)" :
-                 "~ Estimated phrases"}
-              </span>
-            </div>
-            <CuePointBar
-              position={position}
-              duration={duration}
-              bpm={currentTrack?.audioFeatures?.tempo || 120}
-              cuePoints={cuePoints}
-              selectedCuePoint={selectedCuePoint}
-              onSeek={(ms) => seek(ms)}
-              onSelectCue={(cue) => setSelectedCuePoint(
-                selectedCuePoint?.positionMs === cue.positionMs ? null : cue
+              {/* Audio Features Display */}
+              {currentTrack?.audioFeatures && (
+                <div className="mb-3">
+                  <div className="flex flex-wrap gap-2 text-xs mb-1">
+                    <div className="bg-gray-800 px-2.5 py-1 rounded">
+                      <span className="text-gray-400">BPM</span>{" "}
+                      <span className="text-white font-semibold">
+                        {Math.round(currentTrack.audioFeatures.tempo)}
+                      </span>
+                    </div>
+                    <div className="bg-gray-800 px-2.5 py-1 rounded">
+                      <span className="text-gray-400">Key</span>{" "}
+                      <span className="text-white font-semibold">
+                        {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][currentTrack.audioFeatures.key] || currentTrack.audioFeatures.key}
+                      </span>
+                    </div>
+                    <div className="bg-gray-800 px-2.5 py-1 rounded">
+                      <span className="text-gray-400">Energy</span>{" "}
+                      <span className="text-white font-semibold">
+                        {Math.round(currentTrack.audioFeatures.energy * 100)}%
+                      </span>
+                    </div>
+                    <div className="bg-gray-800 px-2.5 py-1 rounded">
+                      <span className="text-gray-400">Dance</span>{" "}
+                      <span className="text-white font-semibold">
+                        {Math.round(currentTrack.audioFeatures.danceability * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                  {currentTrack.audioFeatures.source && (
+                    <div className="text-[10px]">
+                      {currentTrack.audioFeatures.source === 'reccobeats' ? (
+                        <span className="text-green-400">✓ ReccoBeats</span>
+                      ) : (
+                        <span className="text-yellow-400">⚠ Estimated</span>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
-              onSetCustomCue={(ms) => {
-                const sec = Math.round(ms / 1000);
-                const min = Math.floor(sec / 60);
-                const s = sec % 60;
-                setSelectedCuePoint({
-                  positionMs: ms,
-                  label: `Custom (${min}:${s.toString().padStart(2, "0")})`,
-                  type: "custom",
-                  color: "#f472b6",
-                });
-              }}
-            />
+
+              {/* Playback Controls */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={togglePlayPause}
+                  disabled={!playerReady}
+                  className="bg-white text-black px-5 py-1.5 text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded"
+                >
+                  {isPlaying ? "Pause" : "Play"}
+                </button>
+                <button
+                  onClick={skipToNext}
+                  disabled={!nextTrack}
+                  className="bg-gray-800 text-white px-5 py-1.5 text-sm hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={async () => {
+                    await stopPlayback();
+                    onStop();
+                  }}
+                  className="bg-gray-800 text-white px-5 py-1.5 text-sm hover:bg-gray-700 rounded"
+                >
+                  Stop
+                </button>
+                {!playerReady && (
+                  <span className="text-xs text-gray-400">Initializing...</span>
+                )}
+                {isTransitioning && (
+                  <span className="text-xs text-gray-400">Transitioning...</span>
+                )}
+              </div>
+            </div>
           </div>
+
+          {/* Playback Bar — full width below album art row */}
+          <div className="flex items-center justify-end mb-0.5">
+            <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+              structureSource === "synced_lyrics" ? "text-green-400 bg-green-950" :
+              structureSource === "plain_lyrics" ? "text-yellow-400 bg-yellow-950" :
+              "text-gray-500 bg-gray-800"
+            }`}>
+              {structureSource === "synced_lyrics" ? "✓ Real sections (synced lyrics)" :
+               structureSource === "plain_lyrics" ? "~ Sections (lyrics)" :
+               "~ Estimated phrases"}
+            </span>
+          </div>
+          <CuePointBar
+            position={position}
+            duration={duration}
+            bpm={currentTrack?.audioFeatures?.tempo || 120}
+            cuePoints={cuePoints}
+            selectedCuePoint={selectedCuePoint}
+            onSeek={(ms) => seek(ms)}
+            onSelectCue={(cue) => setSelectedCuePoint(
+              selectedCuePoint?.positionMs === cue.positionMs ? null : cue
+            )}
+            onSetCustomCue={(ms) => {
+              const sec = Math.round(ms / 1000);
+              const min = Math.floor(sec / 60);
+              const s = sec % 60;
+              setSelectedCuePoint({
+                positionMs: ms,
+                label: `Custom (${min}:${s.toString().padStart(2, "0")})`,
+                type: "custom",
+                color: "#f472b6",
+              });
+            }}
+          />
         </div>
 
         {/* Bottom: Spotify Mix-Style Transition Interface */}
