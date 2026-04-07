@@ -107,35 +107,25 @@ export async function POST(request: NextRequest) {
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     const bpmDiff = Math.abs((cf?.tempo || 0) - (nf?.tempo || 0)).toFixed(1);
-    const prompt = `You are a professional DJ writing SHORT transition notes (1 sentence each).
-
-Current: "${currentTrack.name}" by ${currentTrack.artists[0]?.name} — ${Math.round(cf?.tempo || 0)} BPM, ${keyName(cf?.key, cf?.mode)}, ${Math.round((cf?.energy || 0) * 100)}% energy
-Next: "${nextTrack.name}" by ${nextTrack.artists[0]?.name} — ${Math.round(nf?.tempo || 0)} BPM, ${keyName(nf?.key, nf?.mode)}, ${Math.round((nf?.energy || 0) * 100)}% energy
-BPM gap: ${bpmDiff}
-
-For each technique, write ONE sentence explaining why it works or doesn't for THIS specific pair. Be specific — mention the songs by name, reference the BPM/key/energy relationship.
-
-Respond ONLY with JSON (no markdown):
-{
-  "reasons": {
-    "Crossfade": "...",
-    "Beat Match": "...",
-    "Echo Fade": "...",
-    "Filter Sweep": "..."
-  }
-}`;
+    const prompt = `DJ transition notes. Current: "${currentTrack.name}" (${Math.round(cf?.tempo || 0)}BPM ${keyName(cf?.key, cf?.mode)} ${Math.round((cf?.energy || 0) * 100)}%E) → Next: "${nextTrack.name}" (${Math.round(nf?.tempo || 0)}BPM ${keyName(nf?.key, nf?.mode)} ${Math.round((nf?.energy || 0) * 100)}%E). BPM gap: ${bpmDiff}. 1 sentence each on why Crossfade/Beat Match/Echo Fade/Filter Sweep works or not. JSON only: {"reasons":{"Crossfade":"...","Beat Match":"...","Echo Fade":"...","Filter Sweep":"..."}}`;
 
     let reasons: Record<string, string> = {};
     try {
       const result = await groq.chat.completions.create({
         messages: [{ role: "user", content: prompt }],
-        model: "llama-3.3-70b-versatile",
+        model: "llama-3.1-8b-instant",
         temperature: 0.7,
-        max_tokens: 400,
+        max_tokens: 300,
+        response_format: { type: "json_object" },
       });
       const text = result.choices[0]?.message?.content || "";
-      const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      const parsed = JSON.parse(clean);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        const m = text.match(/\{[\s\S]*\}/);
+        parsed = m ? JSON.parse(m[0]) : {};
+      }
       reasons = parsed.reasons || {};
     } catch {
       // Fall back to generic reasons if AI fails

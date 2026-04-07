@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {
   crossfadeSchedule,
   beatMatchSchedule,
@@ -9,6 +9,7 @@ import {
   type TransitionSchedule,
 } from "@/lib/transitionEngine";
 import TransitionWaveform from "@/components/TransitionWaveform";
+import CuePointBar, { generateCuePoints, type CuePoint } from "@/components/CuePointBar";
 
 interface Track {
   id: string;
@@ -49,9 +50,15 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A');
   const [playersReady, setPlayersReady] = useState({ A: false, B: false });
 
-  const [nextTrack, setNextTrack] = useState<Track | null>(null);
-  const [nextReason, setNextReason] = useState<string>("");
+  const [autoNextTrack, setAutoNextTrack] = useState<Track | null>(null);
+  const [autoNextReason, setAutoNextReason] = useState<string>("");
   const [recommendedTracks, setRecommendedTracks] = useState<RecommendedTrack[]>([]);
+
+  // nextTrack is derived: queued track takes priority, then AI recommendation
+  const hasQueuedNext = currentIndex < queue.length - 1;
+  const nextTrack = hasQueuedNext ? queue[currentIndex + 1] : autoNextTrack;
+  const nextReason = hasQueuedNext ? "Next in queue" : autoNextReason;
+
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -61,6 +68,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
   const [selectedTransition, setSelectedTransition] = useState<any | null>(null);
   const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
+  const [selectedCuePoint, setSelectedCuePoint] = useState<CuePoint | null>(null);
+  const [incomingStartSec, setIncomingStartSec] = useState(0);
   const [vibePrompt, setVibePrompt] = useState("");
   const [manualSearch, setManualSearch] = useState("");
   const [manualResults, setManualResults] = useState<Track[]>([]);
@@ -76,6 +85,11 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const currentTrack = queue[currentIndex];
   const player = activePlayer === 'A' ? playerA : playerB;
   const playerReady = playersReady[activePlayer];
+
+  const cuePoints = useMemo(
+    () => generateCuePoints(duration, currentTrack?.audioFeatures?.tempo || 120),
+    [duration, currentTrack?.audioFeatures?.tempo]
+  );
 
   // Load YouTube IFrame API and initialize dual players
   useEffect(() => {
@@ -215,16 +229,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     const current = queue[currentIndex];
     if (!current) return;
 
-      // If there's already a next track in the queue, use it as primary
-      if (currentIndex < queue.length - 1) {
-        setNextTrack(queue[currentIndex + 1]);
-        setNextReason("Next in queue");
-        // Still show recommendations
-        fetchRecommendationList();
-        return;
-      }
-
-      // Fetch AI recommendations
+      // Fetch AI recommendations (nextTrack is derived automatically)
       fetchRecommendationList();
     };
     getRecommendations();
@@ -290,10 +295,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         const data = await res.json();
         setRecommendedTracks(data.recommendations || []);
         
-        // Set the top recommendation as next track if no queue item
-        if (data.recommendations.length > 0 && currentIndex >= queue.length - 1) {
-          setNextTrack(data.recommendations[0]);
-          setNextReason(data.recommendations[0].transitionReason);
+        // Set top recommendation as auto-next (only used when queue is empty)
+        if (data.recommendations.length > 0) {
+          setAutoNextTrack(data.recommendations[0]);
+          setAutoNextReason(data.recommendations[0].transitionReason);
         }
       }
     } catch (error) {
@@ -394,29 +399,39 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     }
   };
 
-  const addToQueue = (track?: Track) => {
-    const trackToAdd = track || nextTrack;
-    if (!trackToAdd) return;
+  const addToQueue = (track: Track) => {
+    setQueue(prev => [...prev, track]);
+  };
 
-    // Only block if it's already upcoming in the queue (not already played)
-    const upcomingQueue = queue.slice(currentIndex + 1);
-    if (upcomingQueue.find(t => t.id === trackToAdd.id)) {
-      alert("This track is already coming up in the queue!");
-      return;
-    }
+  const playNext = (track: Track) => {
+    setQueue(prev => {
+      const next = [...prev];
+      next.splice(currentIndex + 1, 0, track);
+      return next;
+    });
+  };
 
-    setQueue([...queue, trackToAdd]);
+  const moveInQueue = (fromIndex: number, direction: "up" | "down") => {
+    const minIndex = currentIndex + 1;
+    if (fromIndex <= currentIndex) return;
+    const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+    if (toIndex < minIndex || toIndex >= queue.length) return;
+    setQueue(prev => {
+      const next = [...prev];
+      [next[fromIndex], next[toIndex]] = [next[toIndex], next[fromIndex]];
+      return next;
+    });
   };
 
   const skipToNext = () => {
     if (currentIndex < queue.length - 1) {
       setCurrentIndex(currentIndex + 1);
       playTrack(queue[currentIndex + 1]);
-    } else if (nextTrack) {
-      // If at end of queue, add next track and play it
-      setQueue([...queue, nextTrack]);
+    } else if (autoNextTrack) {
+      // If at end of queue, add the AI recommendation and play it
+      setQueue([...queue, autoNextTrack]);
       setCurrentIndex(queue.length);
-      playTrack(nextTrack);
+      playTrack(autoNextTrack);
     }
   };
 
@@ -500,11 +515,20 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           break;
       }
 
-      // Seek the outgoing track so the transition ends when the track ends
+      // Determine where the transition starts:
+      // If a cue point is selected, start there; otherwise start so transition ends at track end
       const transitionSec = schedule.totalDurationMs / 1000;
-      const seekTarget = (duration / 1000) - transitionSec;
+      let seekTarget: number;
+
+      if (selectedCuePoint) {
+        seekTarget = selectedCuePoint.positionMs / 1000;
+        console.log(`Starting transition at cue point: ${seekTarget.toFixed(1)}s (${selectedCuePoint.label})`);
+      } else {
+        seekTarget = (duration / 1000) - transitionSec;
+        console.log(`Starting transition ${transitionSec.toFixed(1)}s before end`);
+      }
+
       if (position / 1000 < seekTarget - 1) {
-        console.log(`Seeking to ${seekTarget.toFixed(1)}s (${transitionSec.toFixed(1)}s before end, ${schedule.transitionBeats} beats @ ${bpm} BPM)`);
         currentPlayer.seekTo(seekTarget, true);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -515,9 +539,11 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       nextPlayer.setVolume(0);
       await new Promise(resolve => setTimeout(resolve, 600));
 
-      // If the schedule specifies a cue offset, seek the incoming track past its intro
-      if (schedule.incomingCueOffsetMs > 0) {
-        nextPlayer.seekTo(schedule.incomingCueOffsetMs / 1000, true);
+      // Seek incoming track past its intro if the DJ set a start offset
+      const inCueOffset = incomingStartSec > 0 ? incomingStartSec : schedule.incomingCueOffsetMs / 1000;
+      if (inCueOffset > 0) {
+        console.log(`Incoming track starting at ${inCueOffset}s`);
+        nextPlayer.seekTo(inCueOffset, true);
         await new Promise(resolve => setTimeout(resolve, 200));
       }
 
@@ -562,7 +588,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       // Update queue state
       if (currentIndex < queue.length - 1) {
         setCurrentIndex(currentIndex + 1);
-      } else {
+      } else if (nextTrack) {
         setQueue(prevQueue => [...prevQueue, nextTrack]);
         setCurrentIndex(prevIdx => prevIdx + 1);
       }
@@ -579,6 +605,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       console.log(`Transition complete (${schedule.transitionBeats} beats, ${(schedule.totalDurationMs / 1000).toFixed(1)}s)`);
       setIsTransitioning(false);
       setTransitionProgress(0);
+      setSelectedCuePoint(null);
+      setIncomingStartSec(0);
     } catch (error) {
       console.error("Transition failed:", error);
       try {
@@ -657,7 +685,6 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             {manualResults.map((track) => {
               const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
               const af = track.audioFeatures;
-              const isUpcoming = queue.slice(currentIndex).some(q => q.id === track.id);
 
               return (
                 <div
@@ -703,17 +730,20 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     </div>
                   )}
 
-                  <button
-                    onClick={() => addToQueue(track)}
-                    disabled={isUpcoming}
-                    className={`w-full mt-2 px-2 py-1 text-xs font-medium rounded transition-colors ${
-                      isUpcoming
-                        ? "bg-gray-700 text-gray-500 cursor-not-allowed"
-                        : "bg-purple-600/80 text-white hover:bg-purple-500"
-                    }`}
-                  >
-                    {isUpcoming ? "✓ In Queue" : "+ Add to Queue"}
-                  </button>
+                  <div className="flex gap-1.5 mt-2">
+                    <button
+                      onClick={() => addToQueue(track)}
+                      className="flex-1 px-2 py-1 text-xs font-medium rounded bg-gray-700 text-white hover:bg-gray-600 transition-colors"
+                    >
+                      + Queue
+                    </button>
+                    <button
+                      onClick={() => playNext(track)}
+                      className="flex-1 px-2 py-1 text-xs font-medium rounded bg-purple-600/80 text-white hover:bg-purple-500 transition-colors"
+                    >
+                      Play Next
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -804,7 +834,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               </button>
               <button
                 onClick={skipToNext}
-                disabled={currentIndex >= queue.length - 1 && !nextTrack}
+                disabled={!nextTrack}
                 className="bg-gray-800 text-white px-6 py-2 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
               >
                 Skip
@@ -826,29 +856,29 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               )}
             </div>
 
-            {/* Playback Bar */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-400 w-10 text-right">
-                {formatTime(position)}
-              </span>
-              <div className="flex-1 relative h-2 bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className="absolute top-0 left-0 h-full bg-white transition-all"
-                  style={{ width: `${(position / (duration || 1)) * 100}%` }}
-                />
-                <input
-                  type="range"
-                  min="0"
-                  max={duration || 100}
-                  value={position}
-                  onChange={(e) => seek(Number(e.target.value))}
-                  className="absolute top-0 left-0 w-full h-full opacity-0 cursor-pointer"
-                />
-              </div>
-              <span className="text-xs text-gray-400 w-10">
-                {formatTime(duration)}
-              </span>
-            </div>
+            {/* Playback Bar with Cue Points */}
+            <CuePointBar
+              position={position}
+              duration={duration}
+              bpm={currentTrack?.audioFeatures?.tempo || 120}
+              cuePoints={cuePoints}
+              selectedCuePoint={selectedCuePoint}
+              onSeek={(ms) => seek(ms)}
+              onSelectCue={(cue) => setSelectedCuePoint(
+                selectedCuePoint?.positionMs === cue.positionMs ? null : cue
+              )}
+              onSetCustomCue={(ms) => {
+                const sec = Math.round(ms / 1000);
+                const min = Math.floor(sec / 60);
+                const s = sec % 60;
+                setSelectedCuePoint({
+                  positionMs: ms,
+                  label: `Custom (${min}:${s.toString().padStart(2, "0")})`,
+                  type: "custom",
+                  color: "#f472b6",
+                });
+              }}
+            />
           </div>
         </div>
 
@@ -864,18 +894,41 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             <div className="space-y-4">
               {/* Waveform Visualization — shows preview when a type is selected, live during transition */}
               {nextTrack && (
-                <TransitionWaveform
-                  currentTrackName={currentTrack?.name || ""}
-                  nextTrackName={nextTrack?.name || ""}
-                  bpm={currentTrack?.audioFeatures?.tempo || 120}
-                  transitionType={
-                    isTransitioning
-                      ? activeTransitionType
-                      : selectedTransition?.name || transitionRecommendations[0]?.name || "Crossfade"
-                  }
-                  progress={transitionProgress}
-                  isLive={isTransitioning}
-                />
+                <div className="space-y-2">
+                  <TransitionWaveform
+                    currentTrackName={currentTrack?.name || ""}
+                    nextTrackName={nextTrack?.name || ""}
+                    bpm={currentTrack?.audioFeatures?.tempo || 120}
+                    transitionType={
+                      isTransitioning
+                        ? activeTransitionType
+                        : selectedTransition?.name || transitionRecommendations[0]?.name || "Crossfade"
+                    }
+                    progress={transitionProgress}
+                    isLive={isTransitioning}
+                    outgoingCuePct={selectedCuePoint ? selectedCuePoint.positionMs / (duration || 1) : undefined}
+                    outgoingDurationSec={duration ? duration / 1000 : undefined}
+                    incomingStartSec={incomingStartSec}
+                  />
+                  {/* Incoming track start offset */}
+                  {!isTransitioning && (
+                    <div className="flex items-center gap-3 px-1">
+                      <span className="text-[10px] text-gray-500 w-20 flex-shrink-0">Incoming start</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={60}
+                        step={1}
+                        value={incomingStartSec}
+                        onChange={(e) => setIncomingStartSec(Number(e.target.value))}
+                        className="flex-1 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      />
+                      <span className="text-[10px] text-emerald-400 w-8 text-right font-mono">
+                        {incomingStartSec > 0 ? `+${incomingStartSec}s` : "0:00"}
+                      </span>
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* Transition Controls */}
@@ -942,10 +995,14 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                           </p>
                           <p className="text-xs text-blue-200">{selectedTransition.reason}</p>
                           <p className="text-xs text-blue-300 mt-1">
-                            Transition starts {selectedTransition.startTime}s before current track ends
+                            {selectedCuePoint
+                              ? `Starts at ${selectedCuePoint.label}`
+                              : `Starts ${selectedTransition.startTime}s before track ends`
+                            }
                           </p>
                           <p className="text-xs text-blue-100 mt-2 font-semibold">
-                            💡 Click the button again to execute this transition
+                            Click the button again to execute
+                            {!selectedCuePoint && " · Select a cue point on the timeline for a custom start"}
                           </p>
                         </>
                       ) : (
@@ -953,7 +1010,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                           <p className="text-sm font-semibold mb-1">Recommended: {transitionRecommendations[0]?.name}</p>
                           <p className="text-xs text-gray-400">{transitionRecommendations[0]?.reason}</p>
                           <p className="text-xs text-gray-500 mt-1">
-                            Transition starts {transitionRecommendations[0]?.startTime}s before current track ends
+                            {selectedCuePoint
+                              ? `Cue point: ${selectedCuePoint.label}`
+                              : "Select a cue point on the timeline, or it'll transition before the end"
+                            }
                           </p>
                         </>
                       )}
@@ -976,20 +1036,33 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {/* Current Queue - only show upcoming tracks (not current) */}
+          {/* Upcoming queue */}
+          {queue.length - currentIndex - 1 === 0 && (
+            <div className="p-4 text-center text-gray-500 text-sm">
+              Queue is empty — add songs or let AI recommend
+            </div>
+          )}
           {queue.slice(currentIndex + 1).map((track, relativeIndex) => {
             const actualIndex = currentIndex + 1 + relativeIndex;
+            const isFirst = relativeIndex === 0;
+            const isLast = actualIndex === queue.length - 1;
+
             return (
               <div
                 key={`${track.id}-${actualIndex}`}
-                className="p-3 border-b border-gray-800 hover:bg-gray-800"
+                className={`group p-3 border-b border-gray-800 hover:bg-gray-800/60 transition-colors ${
+                  isFirst ? "bg-gray-800/30" : ""
+                }`}
               >
                 <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-600 w-4 text-right flex-shrink-0">
+                    {relativeIndex + 1}
+                  </span>
                   {track.album?.images?.[0]?.url && (
                     <img
                       src={track.album.images[0].url}
                       alt={track.name}
-                      className="h-12 w-12 rounded"
+                      className="h-10 w-10 rounded flex-shrink-0 object-cover"
                     />
                   )}
                   <div className="flex-1 min-w-0">
@@ -997,13 +1070,38 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     <p className="text-xs text-gray-400 truncate">
                       {track.artists.map(a => a.name).join(", ")}
                     </p>
+                    {track.audioFeatures && (
+                      <p className="text-[10px] text-gray-500 mt-0.5">
+                        {Math.round(track.audioFeatures.tempo)} BPM · {["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][track.audioFeatures.key] || "?"} · {Math.round(track.audioFeatures.energy * 100)}%
+                      </p>
+                    )}
                   </div>
+                  {/* Controls */}
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <button
+                      onClick={() => moveInQueue(actualIndex, "up")}
+                      disabled={isFirst}
+                      className="p-1 text-gray-400 hover:text-white disabled:text-gray-700 disabled:cursor-not-allowed transition-colors"
+                      title="Move up"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>
+                    </button>
+                    <button
+                      onClick={() => moveInQueue(actualIndex, "down")}
+                      disabled={isLast}
+                      className="p-1 text-gray-400 hover:text-white disabled:text-gray-700 disabled:cursor-not-allowed transition-colors"
+                      title="Move down"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
                     <button
                       onClick={() => removeFromQueue(actualIndex)}
-                    className="text-gray-400 hover:text-white text-sm flex-shrink-0"
+                      className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                      title="Remove"
                     >
-                      ✕
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
+                  </div>
                 </div>
               </div>
             );
@@ -1031,8 +1129,6 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
             ) : (
               <div className="space-y-1">
                 {recommendedTracks.map((track, index) => {
-                  const isInQueue = queue.slice(currentIndex).some(q => q.id === track.id);
-                  
                   return (
                     <div
                       key={track.id}
@@ -1115,31 +1211,23 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
                           {/* Action buttons */}
                           <div className="flex gap-2">
-                <button
+                            <button
                               onClick={() => addToQueue(track)}
-                              disabled={isInQueue}
                               className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                                isInQueue
-                                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                                  : index === 0
+                                index === 0
                                   ? 'bg-white text-black hover:bg-gray-200'
                                   : 'bg-gray-700 text-white hover:bg-gray-600'
                               }`}
                             >
-                              {isInQueue ? '✓ In Queue' : '+ Add to Queue'}
-                </button>
-                            {index === 0 && !isInQueue && (
-                <button
-                                onClick={() => {
-                                  setNextTrack(track);
-                                  setNextReason(track.transitionReason);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 rounded transition-colors"
-                              >
-                                Set as Next
-                </button>
-                            )}
-              </div>
+                              + Queue
+                            </button>
+                            <button
+                              onClick={() => playNext(track)}
+                              className="px-3 py-1.5 text-xs font-medium bg-purple-600 text-white hover:bg-purple-500 rounded transition-colors"
+                            >
+                              Play Next
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>

@@ -143,43 +143,37 @@ export async function POST(request: Request) {
 
     const keyName = currentKey != null ? keyToName(currentKey, currentMode) : "unknown";
     const genrePool = GENRE_POOLS[Math.floor(Math.random() * GENRE_POOLS.length)];
-    const overGenerateCount = Math.max(count * 3, 12);
+    const overGenerateCount = Math.max(count + 3, 8);
 
-    const genreDirection = vibePrompt
-      ? `The user specifically wants: "${vibePrompt}". Focus ALL recommendations on this genre/vibe/style. Still suggest songs that a DJ could mix, but make sure they match what the user asked for.`
-      : `Give me a MIX of songs — some from ${genrePool}, and some from other genres that share a similar vibe or energy. Prioritize variety: different artists, different eras, different subgenres. Include both well-known and lesser-known tracks.`;
+    const vibeDirection = vibePrompt
+      ? `Style: "${vibePrompt}".`
+      : `Mix from ${genrePool} and similar genres.`;
 
-    const prompt = `You are a professional DJ building a set. I need ${overGenerateCount} song suggestions that could work after:
-
-"${track.name}" by ${track.artists[0]?.name}
-- BPM: ${currentBpm || "unknown"}
-- Key: ${keyName}
-- Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
-
-${genreDirection}
-
-DO NOT focus on matching exact BPM or key — I will verify that myself. Just suggest songs with a similar feel, mood, or danceability that a DJ might mix together.
-
-Respond ONLY with JSON (no markdown):
-{
-  "recommendations": [
-    { "artist": "artist name", "song": "song name", "reason": "brief vibe/mood reason" }
-  ]
-}`;
+    const prompt = `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). ${vibeDirection} Variety: different artists/eras. JSON only:
+{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 1.1,
-      max_tokens: 1500,
+      model: "llama-3.1-8b-instant",
+      temperature: 1.0,
+      max_tokens: 800,
       seed: Math.floor(Math.random() * 1_000_000),
+      response_format: { type: "json_object" },
     });
 
     const responseText = response.choices[0]?.message?.content || "";
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Could not parse AI response");
 
-    const aiResponse = JSON.parse(jsonMatch[0]);
+    let aiResponse: any;
+    try {
+      aiResponse = JSON.parse(responseText);
+    } catch {
+      // Fallback: try extracting JSON from mixed text
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("Could not parse AI response");
+      // Clean trailing garbage after the last ]
+      const cleaned = jsonMatch[0].replace(/\}[^}]*$/, "}");
+      aiResponse = JSON.parse(cleaned);
+    }
     const candidates: RecommendedTrack[] = [];
 
     const processBatch = async (recs: any[]) => {

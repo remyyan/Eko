@@ -191,20 +191,20 @@ export function echoFadeSchedule(bpm: number): TransitionSchedule {
   const frames: VolumeFrame[] = [];
   let t = 0;
 
-  // Start incoming quietly
-  const incomingTrack = (p: number) => Math.sin(p * Math.PI / 2);
+  // Pulse every 2 beats (half-bar) — wide enough for YouTube's setVolume latency
+  const pulseInterval = beat * 2;
 
   while (t <= totalMs) {
     const progress = t / totalMs;
-    // Envelope: overall fade-out
-    const envelope = Math.pow(1 - progress, 1.5);
-    // Pulse: rhythmic volume flutter synced to beats
-    const beatPhase = (t % beat) / beat;
-    // Sharp pulse on each beat that decays within the beat
-    const pulse = Math.pow(1 - beatPhase, 3);
-    const outVol = Math.round(envelope * pulse * 100);
+    // Envelope: smooth overall fade-out
+    const envelope = Math.pow(1 - progress, 1.2);
 
-    const inVol = Math.round(incomingTrack(progress) * 100);
+    // Gentle cosine pulse every 2 beats (smooth rise and fall, not sharp spike)
+    const pulsePhase = (t % pulseInterval) / pulseInterval;
+    const pulse = 0.35 + 0.65 * Math.cos(pulsePhase * Math.PI * 2) * 0.5 + 0.5;
+
+    const outVol = Math.round(Math.max(0, envelope * pulse * 100));
+    const inVol = Math.round(sCurve(progress) * 100);
 
     frames.push({ timeMs: t, outVol, inVol, progress: progress * 100 });
     t += FRAME_INTERVAL_MS;

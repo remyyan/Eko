@@ -18,6 +18,12 @@ interface TransitionWaveformProps {
   progress: number;
   /** Whether a transition is actively running */
   isLive: boolean;
+  /** Where the outgoing cue point is as a fraction of its total duration (0-1). Shows context bars before the transition. */
+  outgoingCuePct?: number;
+  /** How many seconds into the incoming track to start */
+  incomingStartSec?: number;
+  /** Duration of the outgoing track in seconds */
+  outgoingDurationSec?: number;
 }
 
 const BAR_COUNT = 80;
@@ -116,6 +122,9 @@ export default function TransitionWaveform({
   transitionType,
   progress,
   isLive,
+  outgoingCuePct,
+  incomingStartSec = 0,
+  outgoingDurationSec,
 }: TransitionWaveformProps) {
   const outBars = useMemo(
     () => generateWaveform(currentTrackName, BAR_COUNT),
@@ -133,6 +142,23 @@ export default function TransitionWaveform({
   const durationSec = (schedule.totalDurationMs / 1000).toFixed(1);
   const playheadIdx = Math.floor((progress / 100) * BAR_COUNT);
 
+  // Format cue point info for display
+  const outCueLabel = outgoingCuePct != null && outgoingDurationSec
+    ? (() => {
+        const sec = Math.round(outgoingCuePct * outgoingDurationSec);
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `from ${m}:${s.toString().padStart(2, "0")}`;
+      })()
+    : null;
+  const inCueLabel = incomingStartSec > 0
+    ? (() => {
+        const m = Math.floor(incomingStartSec / 60);
+        const s = Math.round(incomingStartSec) % 60;
+        return `from ${m}:${s.toString().padStart(2, "0")}`;
+      })()
+    : null;
+
   return (
     <div className="bg-gray-900/80 rounded-lg border border-gray-800 p-4">
       {/* Header */}
@@ -142,11 +168,17 @@ export default function TransitionWaveform({
           <span className="text-xs text-gray-400 truncate max-w-[120px]">
             {currentTrackName}
           </span>
+          {outCueLabel && (
+            <span className="text-[10px] text-purple-400/70">{outCueLabel}</span>
+          )}
         </div>
         <span className="text-[10px] text-gray-500 px-2">
-          {durationSec}s · {schedule.transitionBeats} beats · {Math.round(bpm)} BPM
+          {durationSec}s · {schedule.transitionBeats} beats
         </span>
         <div className="flex items-center gap-2">
+          {inCueLabel && (
+            <span className="text-[10px] text-emerald-400/70">{inCueLabel}</span>
+          )}
           <span className="text-xs text-gray-400 truncate max-w-[120px]">
             {nextTrackName}
           </span>

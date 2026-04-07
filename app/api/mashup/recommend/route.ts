@@ -73,30 +73,29 @@ export async function POST(request: Request) {
       ? `\nDO NOT suggest: ${excludedSongs.map((s: any) => `"${s.name}" by ${s.artist}`).join(", ")}`
       : "";
 
-    const prompt = `You are a professional DJ. Suggest 6 songs with a similar vibe or mood to:
-
-"${track.name}" by ${track.artists[0]?.name}
-- BPM: ~${currentBpm || "unknown"}, Key: ${keyName}, Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
-
-I want variety — different artists, maybe different genres. Focus on songs that FEEL right together, not exact BPM matches. I'll handle the technical matching.
-${excludedList}
-
-Respond ONLY with JSON (no markdown):
-{ "recommendations": [{ "artist": "name", "song": "name", "reason": "brief reason" }] }`;
+    const prompt = `DJ mix: 6 songs similar vibe to "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). Different artists, variety.${excludedList}
+JSON only: {"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
+      model: "llama-3.1-8b-instant",
       temperature: 1.0,
-      max_tokens: 600,
+      max_tokens: 500,
       seed: Math.floor(Math.random() * 1_000_000),
+      response_format: { type: "json_object" },
     });
 
     const responseText = response.choices[0]?.message?.content || "";
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Could not parse AI response");
 
-    const aiResponse = JSON.parse(jsonMatch[0]);
+    let aiResponse: any;
+    try {
+      aiResponse = JSON.parse(responseText);
+    } catch {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("Could not parse AI response");
+      const cleaned = jsonMatch[0].replace(/\}[^}]*$/, "}");
+      aiResponse = JSON.parse(cleaned);
+    }
     const recs = aiResponse.recommendations || [];
 
     let bestCandidate: { track: any; reason: string; score: number } | null = null;
