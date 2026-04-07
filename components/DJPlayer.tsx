@@ -70,8 +70,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
   const [selectedCuePoint, setSelectedCuePoint] = useState<CuePoint | null>(null);
   const [incomingStartSec, setIncomingStartSec] = useState(0);
+  const [selectedIncomingCue, setSelectedIncomingCue] = useState<CuePoint | null>(null);
   const [incomingSections, setIncomingSections] = useState<CuePoint[]>([]);
   const [incomingStructureSource, setIncomingStructureSource] = useState("none");
+  const [incomingDurationMs, setIncomingDurationMs] = useState(210_000);
   const [vibePrompt, setVibePrompt] = useState("");
   const [manualSearch, setManualSearch] = useState("");
   const [manualResults, setManualResults] = useState<Track[]>([]);
@@ -137,18 +139,28 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     ? songSections
     : generateCuePoints(duration, currentTrack?.audioFeatures?.tempo || 120);
 
+  const incomingCuePoints = incomingSections.length > 0
+    ? incomingSections
+    : generateCuePoints(incomingDurationMs, nextTrack?.audioFeatures?.tempo || 120);
+
   // Fetch incoming track's song structure
   useEffect(() => {
     if (!nextTrack) {
       setIncomingSections([]);
       setIncomingStructureSource("none");
+      setSelectedIncomingCue(null);
+      setIncomingStartSec(0);
+      setIncomingDurationMs(210_000);
       return;
     }
 
+    setSelectedIncomingCue(null);
+    setIncomingStartSec(0);
+
     const trackName = nextTrack.name;
     const artistName = nextTrack.artists?.[0]?.name || "";
-    // Use a rough duration estimate — incoming track hasn't loaded yet
-    const estDurationMs = 210_000; // 3.5 min default
+    const estDurationMs = 210_000;
+    setIncomingDurationMs(estDurationMs);
 
     const fetchIncoming = async () => {
       try {
@@ -222,7 +234,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               } else if (event.data === window.YT.PlayerState.PAUSED) {
                 setIsPlaying(false);
               } else if (event.data === window.YT.PlayerState.ENDED) {
-                skipToNext();
+                if (!autoTransitionFiredRef.current) skipToNext();
               }
             }
           },
@@ -257,7 +269,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
               } else if (event.data === window.YT.PlayerState.PAUSED) {
                 setIsPlaying(false);
               } else if (event.data === window.YT.PlayerState.ENDED) {
-                skipToNext();
+                if (!autoTransitionFiredRef.current) skipToNext();
               }
             }
           },
@@ -315,6 +327,36 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       }
     };
   }, [player, playerReady, activePlayer]);
+
+  // Auto-transition: trigger a smooth crossfade when approaching the end of the track
+  const autoTransitionFiredRef = useRef(false);
+
+  useEffect(() => {
+    // Reset the flag when the track changes
+    autoTransitionFiredRef.current = false;
+  }, [currentIndex]);
+
+  useEffect(() => {
+    if (!isPlaying || isTransitioning || !nextTrack || !duration || autoTransitionFiredRef.current) return;
+    if (!playerA || !playerB || !playersReady.A || !playersReady.B) return;
+
+    const currentBpm = queue[currentIndex]?.audioFeatures?.tempo || 120;
+    const defaultSchedule = crossfadeSchedule(currentBpm);
+    const autoLeadMs = defaultSchedule.totalDurationMs + 2000;
+    const fallbackTriggerMs = Math.max(0, duration - autoLeadMs);
+    const triggerMs = selectedCuePoint ? selectedCuePoint.positionMs : fallbackTriggerMs;
+    const shouldAutoTransition = position >= triggerMs;
+
+    if (shouldAutoTransition) {
+      autoTransitionFiredRef.current = true;
+      const transition = selectedTransition || transitionRecommendations[0] || { name: "Crossfade" };
+      const triggerLabel = selectedCuePoint
+        ? `${selectedCuePoint.label} (${Math.round(triggerMs / 1000)}s)`
+        : `${Math.round((duration - position) / 1000)}s remaining`;
+      console.log(`Auto-transition at ${triggerLabel}, using ${transition.name}`);
+      executeTransition(transition);
+    }
+  }, [position, duration, isPlaying, isTransitioning, nextTrack, currentIndex, selectedCuePoint, selectedTransition, transitionRecommendations]);
 
   // Get next track recommendations (multiple tracks with ratings)
   useEffect(() => {
@@ -1004,74 +1046,57 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     outgoingDurationSec={duration ? duration / 1000 : undefined}
                     incomingStartSec={incomingStartSec}
                   />
-                  {/* Incoming track cue — section-based picker */}
+                  {/* Incoming track cue bar */}
                   {!isTransitioning && (
-                    <div className="bg-[#0d0d0d] rounded p-2.5 border border-[#1c1c1c]">
-                      <div className="flex items-center justify-between mb-1.5">
+                    <div>
+                      <div className="flex items-center justify-between mb-0.5">
                         <span className="text-[10px] text-[#555]">
-                          Start <span className="text-cyan-400">{nextTrack?.name}</span> at:
+                          Incoming: <span className="text-cyan-400 font-medium">{nextTrack?.name}</span>
                         </span>
-                        {incomingStructureSource !== "none" && (
-                          <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${
-                            incomingStructureSource === "synced_lyrics"
-                              ? "text-green-500/60 bg-green-500/5"
-                              : "text-yellow-500/50 bg-yellow-500/5"
-                          }`}>
-                            {incomingStructureSource === "synced_lyrics" ? "✓ Real" : "~ Lyrics"}
-                          </span>
-                        )}
+                        <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${
+                          incomingStructureSource === "synced_lyrics"
+                            ? "text-green-500/60 bg-green-500/5"
+                            : incomingStructureSource === "plain_lyrics"
+                            ? "text-yellow-500/50 bg-yellow-500/5"
+                            : "text-[#444] bg-[#111]"
+                        }`}>
+                          {incomingStructureSource === "synced_lyrics" ? "✓ Synced"
+                            : incomingStructureSource === "plain_lyrics" ? "~ Lyrics"
+                            : "~ Estimated"}
+                        </span>
                       </div>
-                      <div className="flex flex-wrap gap-1">
-                        <button
-                          onClick={() => setIncomingStartSec(0)}
-                          className={`px-2 py-1 text-[10px] rounded transition-colors ${
-                            incomingStartSec === 0
-                              ? "bg-cyan-500 text-black font-medium"
-                              : "bg-[#161616] text-[#666] hover:bg-[#1c1c1c] hover:text-[#aaa] border border-[#222]"
-                          }`}
-                        >
-                          Start
-                        </button>
-                        {(incomingSections.length > 0
-                          ? incomingSections
-                          : (() => {
-                              const inBpm = nextTrack?.audioFeatures?.tempo || 120;
-                              const phraseMs = (60_000 / inBpm) * 16;
-                              return [1, 2, 3].map(i => ({
-                                positionMs: i * phraseMs,
-                                label: `Phrase ${i}`,
-                                type: "phrase" as const,
-                                color: "#555",
-                                score: 40,
-                              }));
-                            })()
-                        ).map((section, i) => {
-                          const sec = Math.round(section.positionMs / 1000);
-                          const m = Math.floor(sec / 60);
+                      <CuePointBar
+                        position={selectedIncomingCue ? selectedIncomingCue.positionMs : 0}
+                        duration={incomingDurationMs}
+                        bpm={nextTrack?.audioFeatures?.tempo || 120}
+                        cuePoints={incomingCuePoints}
+                        selectedCuePoint={selectedIncomingCue}
+                        onSeek={(ms) => {
+                          setIncomingStartSec(Math.round(ms / 1000));
+                        }}
+                        onSelectCue={(cue) => {
+                          if (selectedIncomingCue?.positionMs === cue.positionMs) {
+                            setSelectedIncomingCue(null);
+                            setIncomingStartSec(0);
+                          } else {
+                            setSelectedIncomingCue(cue);
+                            setIncomingStartSec(Math.round(cue.positionMs / 1000));
+                          }
+                        }}
+                        onSetCustomCue={(ms) => {
+                          const sec = Math.round(ms / 1000);
+                          const min = Math.floor(sec / 60);
                           const s = sec % 60;
-                          const isSelected = incomingStartSec === sec;
-
-                          return (
-                            <button
-                              key={i}
-                              onClick={() => setIncomingStartSec(sec)}
-                              className={`px-2 py-1 text-[10px] rounded transition-colors flex items-center gap-1 ${
-                                isSelected
-                                  ? "bg-cyan-500 text-black font-medium"
-                                  : "bg-[#161616] text-[#666] hover:bg-[#1c1c1c] hover:text-[#aaa] border border-[#222]"
-                              }`}
-                              title={`${section.label} — ${section.score || 50}% transition quality`}
-                            >
-                              <span
-                                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                style={{ backgroundColor: section.color }}
-                              />
-                              <span>{section.label}</span>
-                              <span className="text-[#444] font-mono">{m}:{s.toString().padStart(2, "0")}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                          const cue: CuePoint = {
+                            positionMs: ms,
+                            label: `Custom (${min}:${s.toString().padStart(2, "0")})`,
+                            type: "custom",
+                            color: "#22d3ee",
+                          };
+                          setSelectedIncomingCue(cue);
+                          setIncomingStartSec(sec);
+                        }}
+                      />
                     </div>
                   )}
                 </div>
