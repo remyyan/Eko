@@ -2,162 +2,166 @@ import { NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
 import Groq from "groq-sdk";
 import { searchYouTubeMusic } from "@/lib/youtube";
+import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
+
+const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+function keyToName(key: number, mode?: number): string {
+  const note = KEY_NAMES[key] || "?";
+  if (mode === 0) return `${note} minor`;
+  if (mode === 1) return `${note} major`;
+  return note;
+}
+
+function calculateBPMCompatibility(bpm1: number, bpm2: number): number {
+  const diff = Math.abs(bpm1 - bpm2);
+  if (diff === 0) return 100;
+  const ratio = bpm1 / bpm2;
+  if (Math.abs(ratio - 2) < 0.1 || Math.abs(ratio - 0.5) < 0.1) return 95;
+  if (diff <= 3) return 95;
+  if (diff <= 6) return 85;
+  if (diff <= 10) return 75;
+  if (diff <= 15) return 60;
+  if (diff <= 20) return 45;
+  return Math.max(20, 100 - diff * 2);
+}
+
+function calculateKeyCompatibility(key1: number, key2: number): number {
+  if (key1 === key2) return 100;
+  const circleOfFifths = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
+  const pos1 = circleOfFifths.indexOf(key1);
+  const pos2 = circleOfFifths.indexOf(key2);
+  if (pos1 === -1 || pos2 === -1) return 50;
+  const distance = Math.min(Math.abs(pos1 - pos2), 12 - Math.abs(pos1 - pos2));
+  if (distance === 1) return 90;
+  if (distance === 2) return 70;
+  if (distance === 3) return 50;
+  return Math.max(30, 100 - distance * 15);
+}
+
+function scoreCandidateFeatures(currentFeatures: any, candidateFeatures: any): number {
+  if (!currentFeatures || !candidateFeatures) return 0;
+  const bpm = calculateBPMCompatibility(currentFeatures.tempo, candidateFeatures.tempo);
+  const key = calculateKeyCompatibility(currentFeatures.key, candidateFeatures.key);
+  const energyDiff = Math.abs(currentFeatures.energy - candidateFeatures.energy);
+  const energy = Math.round(Math.max(0, 100 - energyDiff * 150));
+  return bpm * 0.45 + key * 0.35 + energy * 0.2;
+}
 
 export async function POST(request: Request) {
   try {
     const { track, skipCache, excludedSongs = [] } = await request.json();
     if (!track) {
-      return NextResponse.json(
-        { error: "Track is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Track is required" }, { status: 400 });
     }
 
-    // Check cache first (unless skipCache is true)
-    const cacheKey = `recommend-${track.id}`;
+    const cacheKey = `recommend-${track.id}-${Math.floor(Date.now() / 60000)}`;
     if (!skipCache) {
       const cached = getCached(cacheKey);
-      if (cached) {
-        console.log("Returning cached recommendation");
-        return NextResponse.json(cached);
-      }
-    } else {
-      console.log("Skipping cache, fetching new recommendation");
+      if (cached) return NextResponse.json(cached);
     }
 
-    // Get AI recommendation using Groq (much higher free tier limits!)
-    const groq = new Groq({
-      apiKey: process.env.GROQ_API_KEY,
-    });
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-    // Build excluded songs list for prompt
+    const currentBpm = track.audioFeatures?.tempo;
+    const currentKey = track.audioFeatures?.key;
+    const currentMode = track.audioFeatures?.mode;
+    const currentEnergy = track.audioFeatures?.energy;
+    const keyName = currentKey != null ? keyToName(currentKey, currentMode) : "unknown";
+
     const excludedList = excludedSongs.length > 0
-      ? `\n\nDO NOT recommend any of these songs (already suggested):\n${excludedSongs.map((s: any) => `- "${s.name}" by ${s.artist}`).join('\n')}`
-      : '';
+      ? `\nDO NOT suggest: ${excludedSongs.map((s: any) => `"${s.name}" by ${s.artist}`).join(", ")}`
+      : "";
 
-    const prompt = `You are a professional DJ. A DJ is about to mix "${track.name}" by ${track.artists[0]?.name}.
+    const prompt = `You are a professional DJ. Suggest 6 songs with a similar vibe or mood to:
 
-Track Details:
-- BPM: ${track.audioFeatures?.tempo || "unknown"}
-- Key: ${track.audioFeatures?.key || "unknown"}
-- Energy: ${track.audioFeatures?.energy || "unknown"}
-- Danceability: ${track.audioFeatures?.danceability || "unknown"}
+"${track.name}" by ${track.artists[0]?.name}
+- BPM: ~${currentBpm || "unknown"}, Key: ${keyName}, Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
 
-Recommend a SPECIFIC song that would transition well into this track. Consider:
-1. Similar or complementary BPM (±5-10 BPM is ideal)
-2. Compatible musical key
-3. Similar energy level or a good build-up
-4. Same or similar genre
+I want variety — different artists, maybe different genres. Focus on songs that FEEL right together, not exact BPM matches. I'll handle the technical matching.
 ${excludedList}
 
-${skipCache ? "IMPORTANT: Provide a DIFFERENT recommendation than you might have given before. Be creative and suggest an alternative track that also works well." : ""}
-
 Respond ONLY with JSON (no markdown):
-{"artist": "artist name", "song": "song name", "reason": "brief reason why this transition works"}`;
+{ "recommendations": [{ "artist": "name", "song": "name", "reason": "brief reason" }] }`;
 
-    // Try up to 5 times to get a unique recommendation
-    let attempts = 0;
-    let song: any = null;
-    let recommendation: any = null;
+    const response = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.3-70b-versatile",
+      temperature: 1.0,
+      max_tokens: 600,
+      seed: Math.floor(Math.random() * 1_000_000),
+    });
 
-    while (attempts < 5 && !song) {
-      attempts++;
-      console.log(`Recommendation attempt ${attempts}`);
+    const responseText = response.choices[0]?.message?.content || "";
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Could not parse AI response");
 
-      const response = await groq.chat.completions.create({
-        messages: [
-          {
-            role: "user",
-            content: prompt + (attempts > 1 ? `\n\nAttempt ${attempts}: Please suggest something COMPLETELY DIFFERENT from your previous suggestions.` : ''),
-          },
-        ],
-        model: "llama-3.3-70b-versatile",
-        temperature: skipCache ? Math.min(1.2, 0.7 + (attempts * 0.2)) : 0.7, // Increase temperature with each attempt
-        max_tokens: 200,
-        seed: skipCache ? Math.floor(Math.random() * 1000000) : undefined, // Random seed for variety
-      });
+    const aiResponse = JSON.parse(jsonMatch[0]);
+    const recs = aiResponse.recommendations || [];
 
-      const responseText = response.choices[0]?.message?.content || "";
+    let bestCandidate: { track: any; reason: string; score: number } | null = null;
 
-      // Parse JSON from response
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        console.error("Could not parse AI recommendation");
-        continue;
+    for (const rec of recs) {
+      try {
+        const isExcluded = excludedSongs.some(
+          (ex: any) =>
+            ex.name?.toLowerCase() === rec.song?.toLowerCase() &&
+            ex.artist?.toLowerCase() === rec.artist?.toLowerCase()
+        );
+        if (isExcluded) continue;
+
+        const results = await searchYouTubeMusic(`${rec.song} ${rec.artist}`, 1);
+        const song = results?.[0];
+        if (!song) continue;
+        if (excludedSongs.some((ex: any) => ex.id === song.videoId)) continue;
+
+        const spotifyData = await getSpotifyTrackWithFeatures(rec.song, rec.artist);
+        let audioFeatures: any;
+        let albumImage = "";
+
+        if (spotifyData?.features) {
+          audioFeatures = spotifyData.features;
+          albumImage = spotifyData.track?.album?.images?.[0]?.url || "";
+        } else {
+          const resp = await fetch(
+            `${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/youtube/video-details?id=${song.videoId}`
+          );
+          audioFeatures = await resp.json();
+        }
+
+        const score = scoreCandidateFeatures(track.audioFeatures, audioFeatures);
+
+        if (!bestCandidate || score > bestCandidate.score) {
+          bestCandidate = {
+            track: {
+              id: song.videoId,
+              name: rec.song,
+              artists: [{ name: rec.artist }],
+              album: { images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }] },
+              audioFeatures,
+            },
+            reason: rec.reason,
+            score,
+          };
+        }
+      } catch (error) {
+        console.error(`Failed to process "${rec.song}":`, error);
       }
-
-      recommendation = JSON.parse(jsonMatch[0]);
-
-      // Check if this song is in the excluded list
-      const isExcluded = excludedSongs.some((excluded: any) =>
-        excluded.name.toLowerCase() === recommendation.song.toLowerCase() &&
-        excluded.artist.toLowerCase() === recommendation.artist.toLowerCase()
-      );
-
-      if (isExcluded) {
-        console.log(`Song "${recommendation.song}" by ${recommendation.artist} is excluded, trying again...`);
-        continue;
-      }
-
-      // Search for the recommended track on YouTube
-      const searchQuery = `${recommendation.song} ${recommendation.artist}`;
-      const results = await searchYouTubeMusic(searchQuery, 1);
-      song = results?.[0];
-
-      if (!song) {
-        console.log(`Could not find "${recommendation.song}" on YouTube, trying again...`);
-        continue;
-      }
-
-      // Check if the found song is in the excluded list (by video ID)
-      const foundSongExcluded = excludedSongs.some((excluded: any) =>
-        excluded.id === song.videoId
-      );
-
-      if (foundSongExcluded) {
-        console.log(`Found song is excluded (by ID), trying again...`);
-        song = null;
-        continue;
-      }
-
-      // Success!
-      break;
     }
 
-    if (!song || !recommendation) {
+    if (!bestCandidate) {
       return NextResponse.json(
-        { error: "Could not find a unique recommendation after multiple attempts" },
+        { error: "Could not find a recommendation" },
         { status: 404 }
       );
     }
 
-    // Get audio features for recommended track
-    const featuresResponse = await fetch(
-      `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/youtube/video-details?id=${song.videoId}`
-    );
-
-    const audioFeatures = await featuresResponse.json();
-
-    const trackWithFeatures = {
-      id: song.videoId,
-      name: song.name,
-      artists: song.artist ? [{ name: song.artist.name }] : [{ name: "Unknown Artist" }],
-      album: {
-        images: [
-          { url: song.thumbnails?.[0]?.url || "" }
-        ],
-      },
-      audioFeatures,
-    };
-
     const result = {
-      recommendedTrack: trackWithFeatures,
-      reason: recommendation.reason,
+      recommendedTrack: bestCandidate.track,
+      reason: bestCandidate.reason,
     };
 
-    // Cache the result
     setCache(cacheKey, result);
-
     return NextResponse.json(result);
   } catch (error) {
     console.error("Recommendation error:", error);
