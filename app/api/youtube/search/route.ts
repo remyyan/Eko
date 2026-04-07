@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import YTMusic from "ytmusic-api";
+import { searchYouTubeMusic } from "@/lib/youtube";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -10,24 +10,17 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Initialize YouTube Music API
-    const ytmusic = new YTMusic();
-    await ytmusic.initialize();
+    const results = await searchYouTubeMusic(query, 20);
 
-    // Search for songs on YouTube Music
-    const results = await ytmusic.searchSongs(query);
-
-    // Transform YouTube Music results to match our Track interface
-    const tracks = results.map((song: any) => ({
+    const tracks = results.map((song) => ({
       id: song.videoId,
       name: song.name,
-      artists: song.artist ? [{ name: song.artist.name }] : [{ name: "Unknown Artist" }],
+      artists: [{ name: song.artist.name }],
       album: {
-        images: [
-          { url: song.thumbnails?.[0]?.url || "" }
-        ],
+        images: song.thumbnails.length > 0
+          ? [{ url: song.thumbnails[song.thumbnails.length - 1].url }]
+          : [{ url: "" }],
       },
-      // We'll fetch audio features separately when needed
       audioFeatures: null,
     }));
 

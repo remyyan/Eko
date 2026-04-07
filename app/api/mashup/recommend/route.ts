@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
-import YTMusic from "ytmusic-api";
 import Groq from "groq-sdk";
+import { searchYouTubeMusic } from "@/lib/youtube";
 
 export async function POST(request: Request) {
   try {
@@ -99,17 +99,13 @@ Respond ONLY with JSON (no markdown):
         continue;
       }
 
-      // Search for the recommended track on YouTube Music
+      // Search for the recommended track on YouTube
       const searchQuery = `${recommendation.song} ${recommendation.artist}`;
-
-      const ytmusic = new YTMusic();
-      await ytmusic.initialize();
-
-      const results = await ytmusic.searchSongs(searchQuery);
+      const results = await searchYouTubeMusic(searchQuery, 1);
       song = results?.[0];
 
       if (!song) {
-        console.log(`Could not find "${recommendation.song}" on YouTube Music, trying again...`);
+        console.log(`Could not find "${recommendation.song}" on YouTube, trying again...`);
         continue;
       }
 

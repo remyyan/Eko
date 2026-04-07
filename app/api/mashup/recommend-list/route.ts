@@ -22,9 +22,9 @@
 
 import { NextResponse } from "next/server";
 import { getCached, setCache } from "@/lib/cache";
-import YTMusic from "ytmusic-api";
 import Groq from "groq-sdk";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
+import { searchYouTubeMusic } from "@/lib/youtube";
 
 interface Track {
   id: string;
@@ -195,10 +195,6 @@ Respond ONLY with JSON (no markdown):
     const aiResponse = JSON.parse(jsonMatch[0]);
     const recommendations: RecommendedTrack[] = [];
 
-    // Search for each recommended track
-    const ytmusic = new YTMusic();
-    await ytmusic.initialize();
-
     for (const rec of aiResponse.recommendations) {
       try {
         // Try to get real audio features first (ReccoBeats via Spotify ID)
@@ -217,13 +213,13 @@ Respond ONLY with JSON (no markdown):
           audioFeatures = null;
         }
 
-        // Search on YouTube Music for playback
+        // Search on YouTube for playback
         const searchQuery = `${rec.song} ${rec.artist}`;
-        const results = await ytmusic.searchSongs(searchQuery);
+        const results = await searchYouTubeMusic(searchQuery, 1);
         const song = results?.[0];
 
         if (!song) {
-          console.log(`Could not find "${rec.song}" on YouTube Music`);
+          console.log(`Could not find "${rec.song}" on YouTube`);
           continue;
         }
 
