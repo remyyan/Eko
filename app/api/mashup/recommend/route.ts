@@ -124,8 +124,8 @@ ${excludedList}
 
 Return EXACTLY 8 candidates (more than needed — best will be selected by scoring algorithm).
 
-OUTPUT — JSON ONLY:
-{"recommendations":[{"artist":"name","song":"name","bpm":number,"camelot":"e.g. 8A","energy":number (0-100),"reason":"Compare BPM, key, and energy numerically to the current track"}]}`;
+OUTPUT — JSON ONLY (reason MUST be a plain text string sentence, NOT an object):
+{"recommendations":[{"artist":"name","song":"name","bpm":128,"camelot":"9A","energy":75,"reason":"128 BPM matches within 1%, 9A is one step from 8A on Camelot wheel, similar energy"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
@@ -191,7 +191,7 @@ OUTPUT — JSON ONLY:
               album: { images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }] },
               audioFeatures,
             },
-            reason: rec.reason,
+            reason: typeof rec.reason === "string" ? rec.reason : JSON.stringify(rec.reason),
             score,
           };
         }

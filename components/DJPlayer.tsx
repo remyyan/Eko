@@ -1412,7 +1412,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                           </div>
 
                           <p className="text-[10px] text-[#555] mb-2 line-clamp-1">
-                            {track.transitionReason}
+                            {typeof track.transitionReason === "string"
+                              ? track.transitionReason
+                              : JSON.stringify(track.transitionReason)}
                           </p>
 
                           {track.audioFeatures && (
