@@ -14,6 +14,7 @@ interface TransitionWaveformProps {
   nextTrackName: string;
   bpm: number;
   transitionType: string;
+  transitionBeats?: number;
   /** 0-100, drives the playhead during live transition */
   progress: number;
   /** Whether a transition is actively running */
@@ -28,6 +29,8 @@ interface TransitionWaveformProps {
 
 const BAR_COUNT = 80;
 const BAR_GAP = 1;
+// Total seconds of audio context the waveform represents (pre + transition + post)
+const TOTAL_CONTEXT_SEC = 32;
 
 function seedRandom(seed: string): () => number {
   let h = 0;
@@ -56,17 +59,17 @@ function generateWaveform(trackName: string, count: number): number[] {
   return bars;
 }
 
-function getSchedule(type: string, bpm: number): TransitionSchedule {
+function getSchedule(type: string, bpm: number, beatsOverride?: number): TransitionSchedule {
   switch (type) {
     case "Beat Match":
-      return beatMatchSchedule(bpm);
+      return beatMatchSchedule(bpm, beatsOverride);
     case "Echo Fade":
-      return echoFadeSchedule(bpm);
+      return echoFadeSchedule(bpm, beatsOverride);
     case "Filter Sweep":
-      return filterSweepSchedule(bpm);
+      return filterSweepSchedule(bpm, beatsOverride);
     case "Crossfade":
     default:
-      return crossfadeSchedule(bpm);
+      return crossfadeSchedule(bpm, beatsOverride);
   }
 }
 
@@ -104,6 +107,7 @@ export default function TransitionWaveform({
   nextTrackName,
   bpm,
   transitionType,
+  transitionBeats,
   progress,
   isLive,
   outgoingCuePct,
@@ -115,12 +119,23 @@ export default function TransitionWaveform({
   const outBars = useMemo(() => generateWaveform(outSeed, BAR_COUNT), [outSeed]);
   const inBars = useMemo(() => generateWaveform(inSeed, BAR_COUNT), [inSeed]);
   const schedule = useMemo(
-    () => getSchedule(transitionType, bpm),
-    [transitionType, bpm]
+    () => getSchedule(transitionType, bpm, transitionBeats),
+    [transitionType, bpm, transitionBeats]
   );
 
-  const durationSec = (schedule.totalDurationMs / 1000).toFixed(1);
-  const playheadIdx = Math.floor((progress / 100) * BAR_COUNT);
+  const transitionSec = schedule.totalDurationMs / 1000;
+  const durationSec = transitionSec.toFixed(1);
+
+  // How many bars represent the actual transition overlap zone (proportional to duration)
+  const transitionFrac = Math.min(0.75, transitionSec / TOTAL_CONTEXT_SEC);
+  const transitionBarCount = Math.max(4, Math.round(transitionFrac * BAR_COUNT));
+  const contextBarCount = Math.floor((BAR_COUNT - transitionBarCount) / 2);
+  // contextBarCount bars = pre-transition (outgoing only)
+  // transitionBarCount bars = the overlap zone
+  // remaining bars = post-transition (incoming only)
+
+  // Playhead: only tracks within the transition zone during live mode
+  const playheadIdx = contextBarCount + Math.floor((progress / 100) * transitionBarCount);
 
   const outCueLabel = outgoingCuePct != null && outgoingDurationSec
     ? (() => {
@@ -170,8 +185,23 @@ export default function TransitionWaveform({
         {/* Bars */}
         <div className="absolute inset-0 flex items-center gap-px">
           {Array.from({ length: BAR_COUNT }).map((_, i) => {
-            const barProgress = i / BAR_COUNT;
-            const { outVol, inVol } = sampleSchedule(schedule, barProgress);
+            // Determine which zone this bar falls in
+            let outVol: number;
+            let inVol: number;
+
+            if (i < contextBarCount) {
+              // Pre-transition: outgoing track only
+              outVol = 100;
+              inVol = 0;
+            } else if (i < contextBarCount + transitionBarCount) {
+              // Transition overlap zone: sample the real schedule
+              const barProgress = (i - contextBarCount) / transitionBarCount;
+              ({ outVol, inVol } = sampleSchedule(schedule, barProgress));
+            } else {
+              // Post-transition: incoming track only
+              outVol = 0;
+              inVol = 100;
+            }
 
             const outHeight = outBars[i] * (outVol / 100);
             const inHeight = inBars[i] * (inVol / 100);
@@ -228,11 +258,13 @@ export default function TransitionWaveform({
         {/* Center divider line */}
         <div className="absolute left-0 right-0 top-1/2 h-px bg-[#222]" />
 
-        {/* Playhead line (live mode) */}
+        {/* Playhead line (live mode) — pinned to the transition zone, same as the bar highlight */}
         {isLive && (
           <div
             className="absolute top-0 bottom-0 w-0.5 bg-white rounded z-10 transition-all duration-100"
-            style={{ left: `${progress}%` }}
+            style={{
+              left: `${((contextBarCount + (progress / 100) * transitionBarCount) / BAR_COUNT) * 100}%`,
+            }}
           >
             <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full" />
             <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full" />

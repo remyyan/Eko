@@ -161,10 +161,10 @@ export function crossfadeSchedule(bpm: number, beats = 16): TransitionSchedule {
  * then a fast 4-beat equal-power swap right on the downbeat.
  * Great for tracks with strong downbeats or drops.
  */
-export function beatMatchSchedule(bpm: number): TransitionSchedule {
-  const dropBeats = 4;
-  const leadInBeats = 8;
-  const totalBeats = leadInBeats + dropBeats;
+export function beatMatchSchedule(bpm: number, beats = 12): TransitionSchedule {
+  const totalBeats = Math.max(4, Math.round(beats));
+  const dropBeats = Math.max(2, Math.min(8, Math.round(totalBeats / 3)));
+  const leadInBeats = Math.max(2, totalBeats - dropBeats);
 
   return buildCrossfadeSchedule({
     bpm,
@@ -184,8 +184,8 @@ export function beatMatchSchedule(bpm: number): TransitionSchedule {
  * its volume at the beat rate while it fades, creating a rhythmic disappearance.
  * The incoming track fades in smoothly underneath.
  */
-export function echoFadeSchedule(bpm: number): TransitionSchedule {
-  const totalBeats = 16;
+export function echoFadeSchedule(bpm: number, beats = 16): TransitionSchedule {
+  const totalBeats = Math.max(4, Math.round(beats));
   const beat = msPerBeat(bpm);
   const totalMs = totalBeats * beat;
   const frames: VolumeFrame[] = [];
@@ -226,8 +226,8 @@ export function echoFadeSchedule(bpm: number): TransitionSchedule {
  * (volume dips in an S-curve with a mid-transition "whoosh" dip) while the
  * incoming track sweeps in from silence. Creates tension and release.
  */
-export function filterSweepSchedule(bpm: number): TransitionSchedule {
-  const totalBeats = 16;
+export function filterSweepSchedule(bpm: number, beats = 16): TransitionSchedule {
+  const totalBeats = Math.max(4, Math.round(beats));
   const beat = msPerBeat(bpm);
   const totalMs = totalBeats * beat;
   const frames: VolumeFrame[] = [];

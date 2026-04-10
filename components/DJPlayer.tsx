@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   crossfadeSchedule,
   beatMatchSchedule,
@@ -40,6 +40,9 @@ declare global {
 }
 
 export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
+  const MIN_TRANSITION_BEATS = 4;
+  const MAX_TRANSITION_BEATS = 64;
+
   const [queue, setQueue] = useState<Track[]>([initialTrack]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -65,6 +68,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [transitionProgress, setTransitionProgress] = useState(0);
   const [activeTransitionType, setActiveTransitionType] = useState<string>("Crossfade");
+  const [transitionLengthBeats, setTransitionLengthBeats] = useState(16);
   const [transitionRecommendations, setTransitionRecommendations] = useState<any[]>([]);
   const [selectedTransition, setSelectedTransition] = useState<any | null>(null);
   const [excludedRecommendations, setExcludedRecommendations] = useState<any[]>([]);
@@ -92,6 +96,30 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
   const [songSections, setSongSections] = useState<CuePoint[]>([]);
   const [structureSource, setStructureSource] = useState<string>("none");
+
+  const clampTransitionBeats = (beats: number) =>
+    Math.max(MIN_TRANSITION_BEATS, Math.min(MAX_TRANSITION_BEATS, Math.round(beats)));
+
+  const buildTransitionSchedule = (
+    transitionName: string,
+    bpm: number,
+    beatsOverride?: number
+  ): TransitionSchedule => {
+    const beats = clampTransitionBeats(
+      beatsOverride ?? transitionLengthBeats ?? 16
+    );
+    switch (transitionName) {
+      case "Beat Match":
+        return beatMatchSchedule(bpm, beats);
+      case "Echo Fade":
+        return echoFadeSchedule(bpm, beats);
+      case "Filter Sweep":
+        return filterSweepSchedule(bpm, beats);
+      case "Crossfade":
+      default:
+        return crossfadeSchedule(bpm, beats);
+    }
+  };
 
   // Fetch real song structure from lyrics when track changes
   useEffect(() => {
@@ -340,8 +368,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     if (!isPlaying || isTransitioning || !nextTrack || !duration || autoTransitionFiredRef.current) return;
     if (!playerA || !playerB || !playersReady.A || !playersReady.B) return;
 
+    const transition = selectedTransition || transitionRecommendations[0] || { name: "Crossfade", beats: 16 };
+    const beatsForTransition = transitionLengthBeats || transition.beats || 16;
     const currentBpm = queue[currentIndex]?.audioFeatures?.tempo || 120;
-    const defaultSchedule = crossfadeSchedule(currentBpm);
+    const defaultSchedule = buildTransitionSchedule(transition.name, currentBpm, beatsForTransition);
     const autoLeadMs = defaultSchedule.totalDurationMs + 2000;
     const fallbackTriggerMs = Math.max(0, duration - autoLeadMs);
     const triggerMs = selectedCuePoint ? selectedCuePoint.positionMs : fallbackTriggerMs;
@@ -349,14 +379,22 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
 
     if (shouldAutoTransition) {
       autoTransitionFiredRef.current = true;
-      const transition = selectedTransition || transitionRecommendations[0] || { name: "Crossfade" };
       const triggerLabel = selectedCuePoint
         ? `${selectedCuePoint.label} (${Math.round(triggerMs / 1000)}s)`
         : `${Math.round((duration - position) / 1000)}s remaining`;
       console.log(`Auto-transition at ${triggerLabel}, using ${transition.name}`);
       executeTransition(transition);
     }
-  }, [position, duration, isPlaying, isTransitioning, nextTrack, currentIndex, selectedCuePoint, selectedTransition, transitionRecommendations]);
+  }, [position, duration, isPlaying, isTransitioning, nextTrack, currentIndex, selectedCuePoint, selectedTransition, transitionRecommendations, transitionLengthBeats]);
+
+  useEffect(() => {
+    if (!nextTrack) {
+      setTransitionLengthBeats(16);
+      return;
+    }
+    const fallbackBeats = selectedTransition?.beats || transitionRecommendations[0]?.beats || 16;
+    setTransitionLengthBeats(clampTransitionBeats(fallbackBeats));
+  }, [nextTrack?.id, transitionRecommendations]);
 
   // Get next track recommendations (multiple tracks with ratings)
   useEffect(() => {
@@ -603,6 +641,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     // First click: select and show insight
     if (!selectedTransition || selectedTransition.name !== transition.name) {
       setSelectedTransition(transition);
+      if (typeof transition?.beats === "number") {
+        setTransitionLengthBeats(clampTransitionBeats(transition.beats));
+      }
       return;
     }
 
@@ -633,22 +674,11 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       const bpm = currentTrack?.audioFeatures?.tempo || 120;
 
       // Build the volume schedule from the transition engine
-      let schedule: TransitionSchedule;
-      switch (transition.name) {
-        case "Beat Match":
-          schedule = beatMatchSchedule(bpm);
-          break;
-        case "Echo Fade":
-          schedule = echoFadeSchedule(bpm);
-          break;
-        case "Filter Sweep":
-          schedule = filterSweepSchedule(bpm);
-          break;
-        case "Crossfade":
-        default:
-          schedule = crossfadeSchedule(bpm);
-          break;
-      }
+      const schedule = buildTransitionSchedule(
+        transition.name,
+        bpm,
+        transitionLengthBeats || transition?.beats || 16
+      );
 
       // Determine where the transition starts:
       // If a cue point is selected, start there; otherwise start so transition ends at track end
@@ -1040,6 +1070,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                         ? activeTransitionType
                         : selectedTransition?.name || transitionRecommendations[0]?.name || "Crossfade"
                     }
+                    transitionBeats={transitionLengthBeats}
                     progress={transitionProgress}
                     isLive={isTransitioning}
                     outgoingCuePct={selectedCuePoint ? selectedCuePoint.positionMs / (duration || 1) : undefined}
@@ -1143,6 +1174,39 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                     Click a transition type to preview, click again to execute
                   </p>
                 )}
+                <div className="mt-4 pt-3 border-t border-[#1a1a1a]">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] font-semibold text-[#666] uppercase tracking-wider">
+                      Transition Length
+                    </label>
+                    <span className="text-[10px] font-mono text-[#888]">
+                      {transitionLengthBeats} beats
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={MIN_TRANSITION_BEATS}
+                    max={MAX_TRANSITION_BEATS}
+                    step={1}
+                    value={transitionLengthBeats}
+                    onChange={(e) => {
+                      setTransitionLengthBeats(clampTransitionBeats(Number(e.target.value)));
+                    }}
+                    disabled={isTransitioning}
+                    className="w-full accent-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <div className="mt-1 flex items-center justify-between text-[10px] font-mono text-[#555]">
+                    <span>{MIN_TRANSITION_BEATS}b</span>
+                    <span>
+                      ~
+                      {Math.round(
+                        ((transitionLengthBeats * 60) / (currentTrack?.audioFeatures?.tempo || 120)) * 10
+                      ) / 10}
+                      s
+                    </span>
+                    <span>{MAX_TRANSITION_BEATS}b</span>
+                  </div>
+                </div>
               </div>
 
               {/* AI Insight */}
