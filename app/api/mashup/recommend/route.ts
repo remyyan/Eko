@@ -4,6 +4,7 @@ import Groq from "groq-sdk";
 import { searchYouTubeMusic } from "@/lib/youtube";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
 import { getVideoDetails } from "@/lib/videoDetails";
+import { camelotCompatibility, getCamelotPosition } from "@/lib/transitionEngine";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -14,39 +15,67 @@ function keyToName(key: number, mode?: number): string {
   return note;
 }
 
-function calculateBPMCompatibility(bpm1: number, bpm2: number): number {
-  const diff = Math.abs(bpm1 - bpm2);
-  if (diff === 0) return 100;
-  const ratio = bpm1 / bpm2;
-  if (Math.abs(ratio - 2) < 0.1 || Math.abs(ratio - 0.5) < 0.1) return 95;
-  if (diff <= 3) return 95;
-  if (diff <= 6) return 85;
-  if (diff <= 10) return 75;
-  if (diff <= 15) return 60;
-  if (diff <= 20) return 45;
-  return Math.max(20, 100 - diff * 2);
+function camelotLabel(key: number, mode: number): string {
+  const pos = getCamelotPosition(key, mode);
+  return pos ? `${pos.num}${pos.letter}` : "?";
 }
 
-function calculateKeyCompatibility(key1: number, key2: number): number {
-  if (key1 === key2) return 100;
-  const circleOfFifths = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
-  const pos1 = circleOfFifths.indexOf(key1);
-  const pos2 = circleOfFifths.indexOf(key2);
-  if (pos1 === -1 || pos2 === -1) return 50;
-  const distance = Math.min(Math.abs(pos1 - pos2), 12 - Math.abs(pos1 - pos2));
-  if (distance === 1) return 90;
-  if (distance === 2) return 70;
-  if (distance === 3) return 50;
-  return Math.max(30, 100 - distance * 15);
+/** BPM compatibility: supports half-time / double-time matching */
+function calculateBPMCompatibility(bpm1: number, bpm2: number): number {
+  if (!bpm1 || !bpm2) return 50;
+  const ratio = bpm2 / bpm1;
+  // Normalise to within one octave
+  const normRatio = ratio > 1.75 ? ratio / 2 : ratio < 0.57 ? ratio * 2 : ratio;
+  const deviation = Math.abs(normRatio - 1);
+  if (deviation < 0.03) return 100;
+  if (deviation < 0.07) return 90;
+  if (deviation < 0.13) return 75;
+  if (deviation < 0.20) return 55;
+  if (deviation < 0.30) return 35;
+  return 20;
+}
+
+/**
+ * Pre-filter using the AI's own declared BPM/camelot before hitting any APIs.
+ * Returns true if the candidate passes minimum thresholds.
+ */
+function aiPreFilter(
+  currentBpm: number | undefined,
+  currentCamelot: string,
+  rec: { bpm?: number; camelot?: string }
+): boolean {
+  if (currentBpm && rec.bpm) {
+    const ratio = rec.bpm / currentBpm;
+    const normRatio = ratio > 1.75 ? ratio / 2 : ratio < 0.57 ? ratio * 2 : ratio;
+    if (Math.abs(normRatio - 1) > 0.30) return false;
+  }
+  if (currentCamelot !== "?" && rec.camelot) {
+    const match = rec.camelot.match(/^(\d{1,2})([AB])$/i);
+    const curMatch = currentCamelot.match(/^(\d{1,2})([AB])$/i);
+    if (match && curMatch) {
+      const num = parseInt(match[1]);
+      const letter = match[2].toUpperCase();
+      const curNum = parseInt(curMatch[1]);
+      const curLetter = curMatch[2].toUpperCase();
+      const dist = Math.min(Math.abs(num - curNum), 12 - Math.abs(num - curNum));
+      if (dist > 3) return false;
+      if (dist === 3 && letter !== curLetter) return false;
+    }
+  }
+  return true;
 }
 
 function scoreCandidateFeatures(currentFeatures: any, candidateFeatures: any): number {
   if (!currentFeatures || !candidateFeatures) return 0;
-  const bpm = calculateBPMCompatibility(currentFeatures.tempo, candidateFeatures.tempo);
-  const key = calculateKeyCompatibility(currentFeatures.key, candidateFeatures.key);
-  const energyDiff = Math.abs(currentFeatures.energy - candidateFeatures.energy);
-  const energy = Math.round(Math.max(0, 100 - energyDiff * 150));
-  return bpm * 0.45 + key * 0.35 + energy * 0.2;
+  const bpmScore = calculateBPMCompatibility(currentFeatures.tempo, candidateFeatures.tempo);
+  const keyScore = (currentFeatures.key != null && candidateFeatures.key != null &&
+                    currentFeatures.mode != null && candidateFeatures.mode != null)
+    ? camelotCompatibility(currentFeatures.key, currentFeatures.mode, candidateFeatures.key, candidateFeatures.mode)
+    : 50;
+  const energyDiff = Math.abs((currentFeatures.energy || 0.5) - (candidateFeatures.energy || 0.5));
+  const energyScore = Math.max(0, 100 - energyDiff * 150);
+  // BPM is most important for mixing, then key (Camelot), then energy
+  return bpmScore * 0.45 + keyScore * 0.35 + energyScore * 0.2;
 }
 
 export async function POST(request: Request) {
@@ -69,19 +98,40 @@ export async function POST(request: Request) {
     const currentMode = track.audioFeatures?.mode;
     const currentEnergy = track.audioFeatures?.energy;
     const keyName = currentKey != null ? keyToName(currentKey, currentMode) : "unknown";
+    const camelot = (currentKey != null && currentMode != null)
+      ? camelotLabel(currentKey, currentMode)
+      : "?";
 
     const excludedList = excludedSongs.length > 0
       ? `\nDO NOT suggest: ${excludedSongs.map((s: any) => `"${s.name}" by ${s.artist}`).join(", ")}`
       : "";
 
-    const prompt = `DJ mix: 6 songs similar vibe to "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). Different artists, variety.${excludedList}
-JSON only: {"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
+    const prompt = `You are a professional DJ assistant selecting the single best next track to mix.
+
+CURRENT TRACK: "${track.name}" by ${track.artists[0]?.name}
+- BPM: ${currentBpm ?? "unknown"}${currentBpm ? ` (ideal range: ${Math.round(currentBpm * 0.93)}–${Math.round(currentBpm * 1.07)} BPM, or half/double-time)` : ""}
+- Camelot key: ${camelot} (${keyName})
+- Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
+
+STRICT RULES (DO NOT BREAK):
+1. BPM must be within ±10% OR a valid half/double-time match
+2. Camelot key must be compatible: same key, ±1 step on wheel, or relative major/minor
+3. Avoid large energy jumps (>30 out of 100)
+4. Songs must be real, well-known tracks — no hallucinations
+5. DO NOT repeat artists — each suggestion must be a different artist
+6. DO NOT suggest meme songs, novelty tracks, or overly experimental music
+${excludedList}
+
+Return EXACTLY 8 candidates (more than needed — best will be selected by scoring algorithm).
+
+OUTPUT — JSON ONLY:
+{"recommendations":[{"artist":"name","song":"name","bpm":number,"camelot":"e.g. 8A","energy":number (0-100),"reason":"Compare BPM, key, and energy numerically to the current track"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
       model: "llama-3.1-8b-instant",
-      temperature: 1.0,
-      max_tokens: 500,
+      temperature: 0.5,
+      max_tokens: 800,
       seed: Math.floor(Math.random() * 1_000_000),
       response_format: { type: "json_object" },
     });
@@ -97,7 +147,11 @@ JSON only: {"recommendations":[{"artist":"name","song":"name","reason":"brief re
       const cleaned = jsonMatch[0].replace(/\}[^}]*$/, "}");
       aiResponse = JSON.parse(cleaned);
     }
-    const recs = aiResponse.recommendations || [];
+    const allRecs: any[] = aiResponse.recommendations || [];
+
+    // Pre-filter using AI's own declared BPM/camelot before any expensive API calls
+    const recs = allRecs.filter((rec) => aiPreFilter(currentBpm, camelot, rec));
+    console.log(`[recommend] AI returned ${allRecs.length}, pre-filter kept ${recs.length}`);
 
     let bestCandidate: { track: any; reason: string; score: number } | null = null;
 

@@ -799,7 +799,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           <textarea
             value={vibePrompt}
             onChange={(e) => setVibePrompt(e.target.value)}
-            placeholder="e.g., 'k-pop', 'chill R&B', '90s hip hop'..."
+            placeholder="e.g., 'chill R&B', '90s hip hop'..."
             className="w-full h-16 bg-[#111] border border-[#222] p-2.5 text-sm rounded resize-none focus:outline-none focus:border-red-500/50 placeholder:text-[#444] text-[#ccc]"
           />
           <div className="flex gap-2 mt-2">
