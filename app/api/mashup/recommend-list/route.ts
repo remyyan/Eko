@@ -4,6 +4,7 @@ import Groq from "groq-sdk";
 import { getSpotifyTrackWithFeatures } from "@/lib/spotify";
 import { searchYouTubeMusic } from "@/lib/youtube";
 import { getVideoDetails } from "@/lib/videoDetails";
+import { camelotCompatibility, getCamelotPosition } from "@/lib/transitionEngine";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -12,6 +13,11 @@ function keyToName(key: number, mode?: number): string {
   if (mode === 0) return `${note} minor`;
   if (mode === 1) return `${note} major`;
   return note;
+}
+
+function camelotLabel(key: number, mode: number): string {
+  const pos = getCamelotPosition(key, mode);
+  return pos ? `${pos.num}${pos.letter}` : "?";
 }
 
 interface Track {
@@ -30,39 +36,18 @@ interface RecommendedTrack extends Track {
   energyMatch: number;
 }
 
-function calculateKeyCompatibility(key1: number, key2: number): number {
-  if (key1 === key2) return 100;
-
-  const circleOfFifths = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
-  const pos1 = circleOfFifths.indexOf(key1);
-  const pos2 = circleOfFifths.indexOf(key2);
-
-  if (pos1 === -1 || pos2 === -1) return 50;
-
-  const distance = Math.min(
-    Math.abs(pos1 - pos2),
-    12 - Math.abs(pos1 - pos2)
-  );
-
-  if (distance === 1) return 90;
-  if (distance === 2) return 70;
-  if (distance === 3) return 50;
-  return Math.max(30, 100 - distance * 15);
-}
-
+/** BPM compatibility supporting half/double-time. Returns 0-100. */
 function calculateBPMCompatibility(bpm1: number, bpm2: number): number {
-  const diff = Math.abs(bpm1 - bpm2);
-  if (diff === 0) return 100;
-
-  const ratio = bpm1 / bpm2;
-  if (Math.abs(ratio - 2) < 0.1 || Math.abs(ratio - 0.5) < 0.1) return 95;
-
-  if (diff <= 3) return 95;
-  if (diff <= 6) return 85;
-  if (diff <= 10) return 75;
-  if (diff <= 15) return 60;
-  if (diff <= 20) return 45;
-  return Math.max(20, 100 - diff * 2);
+  if (!bpm1 || !bpm2) return 50;
+  const ratio = bpm2 / bpm1;
+  const normRatio = ratio > 1.75 ? ratio / 2 : ratio < 0.57 ? ratio * 2 : ratio;
+  const deviation = Math.abs(normRatio - 1);
+  if (deviation < 0.03) return 100;
+  if (deviation < 0.07) return 90;
+  if (deviation < 0.13) return 75;
+  if (deviation < 0.20) return 55;
+  if (deviation < 0.30) return 35;
+  return 20;
 }
 
 function calculateEnergyMatch(energy1: number, energy2: number): number {
@@ -82,7 +67,10 @@ function calculateTransitionScore(
   }
 
   const bpmMatch = calculateBPMCompatibility(current.tempo, candidate.tempo);
-  const keyMatch = calculateKeyCompatibility(current.key, candidate.key);
+  const keyMatch = (current.key != null && candidate.key != null &&
+                    current.mode != null && candidate.mode != null)
+    ? camelotCompatibility(current.key, current.mode, candidate.key, candidate.mode)
+    : 50;
   const energyMatch = calculateEnergyMatch(current.energy, candidate.energy);
 
   const score = bpmMatch * 0.45 + keyMatch * 0.35 + energyMatch * 0.2;
@@ -93,6 +81,46 @@ function calculateTransitionScore(
     keyMatch: Math.round(keyMatch),
     energyMatch: Math.round(energyMatch),
   };
+}
+
+/**
+ * Pre-filter using the AI's own declared BPM/camelot before hitting any APIs.
+ * Returns true if the candidate passes minimum thresholds.
+ */
+function aiPreFilter(
+  currentBpm: number | undefined,
+  currentCamelot: string,
+  rec: { bpm?: number; camelot?: string; energy?: number }
+): boolean {
+  // BPM check
+  if (currentBpm && rec.bpm) {
+    const ratio = rec.bpm / currentBpm;
+    const normRatio = ratio > 1.75 ? ratio / 2 : ratio < 0.57 ? ratio * 2 : ratio;
+    if (Math.abs(normRatio - 1) > 0.30) return false; // too far even with half/double time
+  }
+  // Camelot check: parse "8A" style strings
+  if (currentCamelot !== "?" && rec.camelot) {
+    const match = rec.camelot.match(/^(\d{1,2})([AB])$/i);
+    const curMatch = currentCamelot.match(/^(\d{1,2})([AB])$/i);
+    if (match && curMatch) {
+      const num = parseInt(match[1]);
+      const letter = match[2].toUpperCase();
+      const curNum = parseInt(curMatch[1]);
+      const curLetter = curMatch[2].toUpperCase();
+      const dist = Math.min(Math.abs(num - curNum), 12 - Math.abs(num - curNum));
+      // Drop anything further than 3 steps on the wheel — too clashing
+      if (dist > 3) return false;
+      // If 3 steps away, require same letter (less harmonic risk)
+      if (dist === 3 && letter !== curLetter) return false;
+    }
+  }
+  // Energy check: drop if AI says energy gap is massive (>35 out of 100)
+  if (rec.energy != null) {
+    // We don't have a normalised energy 0-100 from the current track easily here,
+    // so just guard against clearly wrong values
+    if (rec.energy < 0 || rec.energy > 100) return false;
+  }
+  return true;
 }
 
 async function fetchTrackFeatures(
@@ -154,12 +182,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Track is required" }, { status: 400 });
     }
 
-    const cacheKey = `recommend-list-${track.id}-${count}`;
+    const cacheKey = `recommend-list-${track.id}-${count}-${vibePrompt ?? ""}`;
     if (!skipCache) {
       const cached = getCached(cacheKey);
-      if (cached) {
-        return NextResponse.json(cached);
-      }
+      if (cached) return NextResponse.json(cached);
     }
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -170,18 +196,53 @@ export async function POST(request: Request) {
     const currentEnergy = track.audioFeatures?.energy;
 
     const keyName = currentKey != null ? keyToName(currentKey, currentMode) : "unknown";
+    const camelot = (currentKey != null && currentMode != null)
+      ? camelotLabel(currentKey, currentMode)
+      : "?";
     const genrePool = GENRE_POOLS[Math.floor(Math.random() * GENRE_POOLS.length)];
-    const overGenerateCount = vibePrompt ? Math.max(count * 3, 15) : Math.max(count + 3, 8);
+    // Over-generate so pre-filter + dedup still yield enough results
+    const overGenerateCount = Math.max(count * 3, 12);
 
-    const prompt = vibePrompt
-      ? `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}). USER REQUEST: "${vibePrompt}" — follow this EXACTLY. If they ask for a specific artist, ONLY list songs by that artist. JSON only:\n{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`
-      : `DJ set: ${overGenerateCount} songs to mix after "${track.name}" by ${track.artists[0]?.name} (${currentBpm || "?"}BPM, ${keyName}, ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "?"} energy). Mix from ${genrePool} and similar genres. Variety: different artists/eras. JSON only:\n{"recommendations":[{"artist":"name","song":"name","reason":"brief reason"}]}`;
+    const excludedList = excludeIds.length > 0
+      ? `\nDO NOT suggest tracks with these IDs (already played): ${excludeIds.join(", ")}`
+      : "";
+
+    const vibeSection = vibePrompt
+      ? `\nUSER REQUEST: "${vibePrompt}"\nINTERPRETATION RULES:\n- If artist specified → ONLY songs by that artist\n- If genre specified → prioritize that genre\n- If mood/era specified → match energy + style\n- STILL obey all DJ compatibility rules above`
+      : `\nMix from ${genrePool} and similar genres. Use variety — different artists and eras.`;
+
+    const prompt = `You are a professional DJ assistant selecting songs that can be CLEANLY MIXED into the current track.
+
+CURRENT TRACK: "${track.name}" by ${track.artists[0]?.name}
+- BPM: ${currentBpm ?? "unknown"}
+- Camelot key: ${camelot} (${keyName})
+- Energy: ${currentEnergy != null ? Math.round(currentEnergy * 100) + "%" : "unknown"}
+
+STRICT RULES (DO NOT BREAK):
+1. BPM must be within ±10% OR a valid half/double-time match
+2. Camelot key must be compatible: same key, ±1 step on wheel, or relative major/minor (same number, different letter)
+3. Avoid large energy jumps (>30 out of 100)
+4. Songs must be real, well-known tracks — no hallucinations
+5. DO NOT repeat artists
+6. DO NOT suggest meme songs, novelty tracks, or overly experimental music
+${excludedList}${vibeSection}
+
+SELECTION STRATEGY:
+1. Filter by BPM compatibility first
+2. Then filter by Camelot key compatibility
+3. Then choose for best energy flow
+4. Prefer tracks DJs would realistically play together
+
+Return EXACTLY ${overGenerateCount} candidates (more than needed — they will be filtered and scored).
+
+OUTPUT — JSON ONLY (reason MUST be a plain text string sentence, NOT an object):
+{"recommendations":[{"artist":"name","song":"name","bpm":128,"camelot":"9A","energy":75,"reason":"128 BPM matches within 1%, 9A is one step from 8A on Camelot wheel, similar energy"}]}`;
 
     const response = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
       model: "llama-3.1-8b-instant",
-      temperature: 1.0,
-      max_tokens: 800,
+      temperature: 0.5,
+      max_tokens: 1200,
       seed: Math.floor(Math.random() * 1_000_000),
       response_format: { type: "json_object" },
     });
@@ -192,50 +253,52 @@ export async function POST(request: Request) {
     try {
       aiResponse = JSON.parse(responseText);
     } catch {
-      // Fallback: try extracting JSON from mixed text
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("Could not parse AI response");
-      // Clean trailing garbage after the last ]
-      const cleaned = jsonMatch[0].replace(/\}[^}]*$/, "}");
-      aiResponse = JSON.parse(cleaned);
+      aiResponse = JSON.parse(jsonMatch[0]);
     }
-    const candidates: RecommendedTrack[] = [];
+
+    const allRecs: any[] = aiResponse.recommendations || [];
+
+    // ── Pre-filter using AI's own declared BPM/camelot before any API calls ──
+    const preFiltered = allRecs.filter((rec) => aiPreFilter(currentBpm, camelot, rec));
+    console.log(`[recommend-list] AI returned ${allRecs.length}, pre-filter kept ${preFiltered.length}`);
 
     // Extract artist name from vibe prompt for post-filtering
-    // Detects patterns like "nmixx songs only", "only twice", "blackpink songs"
-    const artistFilter = vibePrompt
-      ? extractArtistFilter(vibePrompt)
-      : null;
+    const artistFilter = vibePrompt ? extractArtistFilter(vibePrompt) : null;
+
+    const candidates: RecommendedTrack[] = [];
+    const seenArtists = new Set<string>();
 
     const processBatch = async (recs: any[]) => {
       return Promise.allSettled(
         recs.map(async (rec) => {
+          // Deduplicate artists even before hitting YouTube
+          const artistKey = rec.artist?.toLowerCase().trim();
+          if (artistKey && seenArtists.has(artistKey)) return null;
+
           const results = await searchYouTubeMusic(`${rec.song} ${rec.artist}`, 1);
           const song = results?.[0];
           if (!song) return null;
 
-          // If the user requested a specific artist, verify the YouTube result matches
+          // Artist filter from vibe prompt
           if (artistFilter) {
             const resultArtist = song.artist.name.toLowerCase();
             if (!resultArtist.includes(artistFilter)) {
-              console.log(`Filtered out "${song.name}" by ${song.artist.name} (doesn't match "${artistFilter}")`);
+              console.log(`[recommend-list] Filtered out "${song.name}" — doesn't match "${artistFilter}"`);
               return null;
             }
           }
 
-          const { features, albumImage } = await fetchTrackFeatures(
-            rec.song,
-            rec.artist,
-            song.videoId
-          );
+          if (artistKey) seenArtists.add(artistKey);
+
+          const { features, albumImage } = await fetchTrackFeatures(rec.song, rec.artist, song.videoId);
 
           const recommendedTrack: Track = {
             id: song.videoId,
             name: song.name,
             artists: [{ name: song.artist.name }],
-            album: {
-              images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }],
-            },
+            album: { images: [{ url: albumImage || song.thumbnails?.[0]?.url || "" }] },
             audioFeatures: features,
           };
 
@@ -244,7 +307,7 @@ export async function POST(request: Request) {
           return {
             ...recommendedTrack,
             transitionScore: analysis.score,
-            transitionReason: rec.reason,
+            transitionReason: typeof rec.reason === "string" ? rec.reason : JSON.stringify(rec.reason),
             bpmMatch: analysis.bpmMatch,
             keyMatch: analysis.keyMatch,
             energyMatch: analysis.energyMatch,
@@ -253,29 +316,25 @@ export async function POST(request: Request) {
       );
     };
 
-    const allRecs = aiResponse.recommendations || [];
     const BATCH_SIZE = 4;
-    for (let i = 0; i < allRecs.length; i += BATCH_SIZE) {
-      const batch = allRecs.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < preFiltered.length; i += BATCH_SIZE) {
+      const batch = preFiltered.slice(i, i + BATCH_SIZE);
       const results = await processBatch(batch);
       for (const r of results) {
-        if (r.status === "fulfilled" && r.value) {
-          candidates.push(r.value);
-        }
+        if (r.status === "fulfilled" && r.value) candidates.push(r.value);
       }
       if (candidates.length >= count * 2) break;
     }
 
-    // Deduplicate and exclude already-played tracks
+    // Deduplicate by video ID and exclude already-played tracks
     const excludeSet = new Set<string>(excludeIds);
-    const seen = new Set<string>();
+    const seenIds = new Set<string>();
     const unique = candidates.filter((c) => {
-      if (seen.has(c.id) || excludeSet.has(c.id)) return false;
-      seen.add(c.id);
+      if (seenIds.has(c.id) || excludeSet.has(c.id)) return false;
+      seenIds.add(c.id);
       return true;
     });
 
-    // Sort by transition score and take the best ones
     unique.sort((a, b) => b.transitionScore - a.transitionScore);
     const recommendations = unique.slice(0, count);
 
@@ -286,6 +345,7 @@ export async function POST(request: Request) {
         artist: track.artists[0]?.name,
         bpm: currentBpm,
         key: currentKey,
+        camelot,
         energy: currentEnergy,
       },
     };

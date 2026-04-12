@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { camelotCompatibility, getCamelotPosition } from "@/lib/transitionEngine";
 
 interface AudioFeatures {
   tempo: number;
@@ -34,49 +35,50 @@ const keyNames = [
   "B",
 ];
 
+function camelotLabel(key: number, mode: number): string {
+  const pos = getCamelotPosition(key, mode);
+  return pos ? `${pos.num}${pos.letter}` : "?";
+}
+
 function calculateCompatibilityScore(
   track1: AudioFeatures,
   track2: AudioFeatures
 ): number {
   let score = 0;
 
-  // BPM compatibility (40% weight)
-  const bpmDiff = Math.abs(track1.tempo - track2.tempo);
-  const bpmScore = Math.max(0, 100 - bpmDiff);
+  // BPM compatibility (40% weight) — supports half/double time
+  const ratio = track2.tempo / track1.tempo;
+  const normRatio = ratio > 1.75 ? ratio / 2 : ratio < 0.57 ? ratio * 2 : ratio;
+  const bpmScore = Math.max(0, 100 - Math.abs(normRatio - 1) * 400);
   score += bpmScore * 0.4;
 
-  // Key compatibility (30% weight)
-  const keyDiff = Math.abs(track1.key - track2.key);
-  const keyCompatible =
-    keyDiff === 0 || // Same key
-    keyDiff === 7 || // Perfect fifth
-    keyDiff === 5 || // Perfect fourth
-    keyDiff === 2 || // Whole step
-    keyDiff === 10; // Minor third
-  const keyScore = keyCompatible ? 100 : Math.max(0, 100 - keyDiff * 10);
+  // Key compatibility via Camelot wheel (30% weight)
+  const keyScore = camelotCompatibility(track1.key, track1.mode, track2.key, track2.mode);
   score += keyScore * 0.3;
 
   // Energy compatibility (15% weight)
   const energyDiff = Math.abs(track1.energy - track2.energy);
-  const energyScore = (1 - energyDiff) * 100;
-  score += energyScore * 0.15;
+  score += (1 - energyDiff) * 100 * 0.15;
 
   // Danceability compatibility (10% weight)
   const danceabilityDiff = Math.abs(track1.danceability - track2.danceability);
-  const danceabilityScore = (1 - danceabilityDiff) * 100;
-  score += danceabilityScore * 0.1;
+  score += (1 - danceabilityDiff) * 100 * 0.1;
 
   // Valence (mood) compatibility (5% weight)
   const valenceDiff = Math.abs(track1.valence - track2.valence);
-  const valenceScore = (1 - valenceDiff) * 100;
-  score += valenceScore * 0.05;
+  score += (1 - valenceDiff) * 100 * 0.05;
 
   return Math.round(score);
 }
 
 function generateBasicAnalysis(track1: Track, track2: Track, score: number): string {
   const bpmDiff = Math.abs(track1.audioFeatures.tempo - track2.audioFeatures.tempo);
-  const keyDiff = Math.abs(track1.audioFeatures.key - track2.audioFeatures.key);
+  const keyScore = camelotCompatibility(
+    track1.audioFeatures.key, track1.audioFeatures.mode,
+    track2.audioFeatures.key, track2.audioFeatures.mode
+  );
+  const c1 = camelotLabel(track1.audioFeatures.key, track1.audioFeatures.mode);
+  const c2 = camelotLabel(track2.audioFeatures.key, track2.audioFeatures.mode);
 
   let analysis = "";
 
@@ -85,27 +87,29 @@ function generateBasicAnalysis(track1: Track, track2: Track, score: number): str
   } else if (score >= 60) {
     analysis = "Good compatibility. ";
   } else {
-    analysis = "Challenging mashup. ";
+    analysis = "Challenging mix. ";
   }
 
   // BPM analysis
   if (bpmDiff < 5) {
-    analysis += "The tempos are very close, making this an easy mix. ";
+    analysis += "Tempos are very close — easy to beat-match. ";
   } else if (bpmDiff < 10) {
-    analysis += "Minor tempo adjustment needed. ";
+    analysis += "Minor tempo difference — slight BPM nudge needed. ";
   } else {
-    analysis += `Significant BPM difference (${Math.round(bpmDiff)} BPM) - consider using tempo stretching. `;
+    analysis += `BPM difference of ${Math.round(bpmDiff)} — use a filter sweep or echo fade to bridge the gap. `;
   }
 
-  // Key analysis
-  if (keyDiff === 0) {
-    analysis += "Same key - perfect harmonic match!";
-  } else if (keyDiff === 7 || keyDiff === 5) {
-    analysis += "Keys are harmonically compatible (perfect fifth/fourth relationship).";
-  } else if (keyDiff === 2) {
-    analysis += "Keys are a whole step apart - should blend well.";
+  // Camelot key analysis
+  if (keyScore >= 100) {
+    analysis += `Same Camelot key (${c1}) — perfect harmonic match.`;
+  } else if (keyScore >= 88) {
+    analysis += `Relative major/minor (${c1}↔${c2}) — blends naturally.`;
+  } else if (keyScore >= 72) {
+    analysis += `Adjacent Camelot keys (${c1}→${c2}) — harmonically safe mix.`;
+  } else if (keyScore >= 45) {
+    analysis += `Camelot keys ${c1}→${c2} are moderately compatible — short transition recommended.`;
   } else {
-    analysis += "Consider key shifting for better harmonic compatibility.";
+    analysis += `Keys ${c1}→${c2} clash on the Camelot wheel — use a quick cut or filter sweep.`;
   }
 
   return analysis;
@@ -135,28 +139,23 @@ export async function POST(request: Request) {
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-        const prompt = `You are a professional DJ assistant. Analyze these two tracks for mashup compatibility:
+        const camelot1 = camelotLabel(track1.audioFeatures.key, track1.audioFeatures.mode);
+        const camelot2 = camelotLabel(track2.audioFeatures.key, track2.audioFeatures.mode);
+        const prompt = `You are a professional DJ assistant. Analyze these two tracks for mix compatibility:
 
 Track 1: "${track1.name}" by ${track1.artists.map((a: any) => a.name).join(", ")}
 - BPM: ${Math.round(track1.audioFeatures.tempo)}
-- Key: ${keyNames[track1.audioFeatures.key]} ${track1.audioFeatures.mode === 1 ? "Major" : "Minor"}
+- Key: ${keyNames[track1.audioFeatures.key]} ${track1.audioFeatures.mode === 1 ? "Major" : "Minor"} (Camelot: ${camelot1})
 - Energy: ${Math.round(track1.audioFeatures.energy * 100)}%
-- Danceability: ${Math.round(track1.audioFeatures.danceability * 100)}%
-- Valence (mood): ${Math.round(track1.audioFeatures.valence * 100)}%
 
 Track 2: "${track2.name}" by ${track2.artists.map((a: any) => a.name).join(", ")}
 - BPM: ${Math.round(track2.audioFeatures.tempo)}
-- Key: ${keyNames[track2.audioFeatures.key]} ${track2.audioFeatures.mode === 1 ? "Major" : "Minor"}
+- Key: ${keyNames[track2.audioFeatures.key]} ${track2.audioFeatures.mode === 1 ? "Major" : "Minor"} (Camelot: ${camelot2})
 - Energy: ${Math.round(track2.audioFeatures.energy * 100)}%
-- Danceability: ${Math.round(track2.audioFeatures.danceability * 100)}%
-- Valence (mood): ${Math.round(track2.audioFeatures.valence * 100)}%
 
-Provide a brief analysis (2-3 sentences) on:
-1. How well these tracks would work together in a mashup
-2. Specific techniques the DJ should use (tempo adjustment, key shifting, etc.)
-3. What makes this combination work or not work
+Camelot wheel compatibility: ${camelot1} → ${camelot2}. Adjacent numbers (±1) on the same letter are harmonically safe. Same number, different letter = relative major/minor.
 
-Keep it concise and practical for a DJ.`;
+In 2-3 sentences tell the DJ: how well these mix, what transition style to use (crossfade/beat-match/filter sweep), and any BPM or key tips. Be direct and practical.`;
 
         const result = await model.generateContent(prompt);
         const response = result.response;

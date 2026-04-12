@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.0.12",
     "@google/generative-ai": "^0.24.1",
+    "@vercel/analytics": "^2.0.1",
     "firebase": "^12.5.0",
     "groq-sdk": "^0.37.0",
     "next": "16.0.10",

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { useUser } from "@clerk/nextjs";
 import {
   crossfadeSchedule,
   beatMatchSchedule,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/transitionEngine";
 import TransitionWaveform from "@/components/TransitionWaveform";
 import CuePointBar, { generateCuePoints, type CuePoint } from "@/components/CuePointBar";
+import { saveMix, type SavedTrack } from "@/lib/saveMix";
 
 interface Track {
   id: string;
@@ -29,6 +31,7 @@ interface RecommendedTrack extends Track {
 
 interface DJPlayerProps {
   initialTrack: Track;
+  initialQueue?: Track[];
   onStop: () => void;
 }
 
@@ -39,11 +42,14 @@ declare global {
   }
 }
 
-export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
+export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlayerProps) {
+  const { user } = useUser();
   const MIN_TRANSITION_BEATS = 4;
   const MAX_TRANSITION_BEATS = 64;
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
 
-  const [queue, setQueue] = useState<Track[]>([initialTrack]);
+  const [queue, setQueue] = useState<Track[]>(initialQueue ?? [initialTrack]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -83,6 +89,8 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
   const [manualResults, setManualResults] = useState<Track[]>([]);
   const [manualLoading, setManualLoading] = useState(false);
   const lastTransitionPairRef = useRef<string>("");
+  // Stores per-track cue settings as transitions happen so they can be saved
+  const cueSettingsRef = useRef<Record<number, { outgoingCueMs?: number; incomingStartSec?: number }>>({});
   const playerAContainerRef = useRef<HTMLDivElement>(null);
   const playerBContainerRef = useRef<HTMLDivElement>(null);
   const positionIntervalRef = useRef<any>(null);
@@ -374,7 +382,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     const defaultSchedule = buildTransitionSchedule(transition.name, currentBpm, beatsForTransition);
     const autoLeadMs = defaultSchedule.totalDurationMs + 2000;
     const fallbackTriggerMs = Math.max(0, duration - autoLeadMs);
-    const triggerMs = selectedCuePoint ? selectedCuePoint.positionMs : fallbackTriggerMs;
+    const savedCueMs = queue[currentIndex]?.audioFeatures?.outgoingCueMs;
+    const triggerMs = selectedCuePoint
+      ? selectedCuePoint.positionMs
+      : savedCueMs ?? fallbackTriggerMs;
     const shouldAutoTransition = position >= triggerMs;
 
     if (shouldAutoTransition) {
@@ -660,6 +671,10 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     setSelectedTransition(null);
     console.log(`Executing ${transition.name} transition`);
 
+    // Capture cue settings for this transition index before any async operations
+    const capturedCueMs = selectedCuePoint?.positionMs;
+    const capturedIncomingSec = incomingStartSec > 0 ? incomingStartSec : undefined;
+
     try {
       let trackToPlay = nextTrack;
       if (currentIndex < queue.length - 1) {
@@ -669,6 +684,20 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       const currentPlayer = activePlayer === 'A' ? playerA : playerB;
       const nextPlayer = activePlayer === 'A' ? playerB : playerA;
       const currentTrack = queue[currentIndex];
+
+      // Store cue settings so they can be saved later.
+      // outgoingCueMs belongs to the track we're leaving (currentIndex).
+      // incomingStartSec belongs to the track we're entering (currentIndex + 1).
+      cueSettingsRef.current[currentIndex] = {
+        ...cueSettingsRef.current[currentIndex],
+        outgoingCueMs: capturedCueMs,
+      };
+      if (capturedIncomingSec != null) {
+        cueSettingsRef.current[currentIndex + 1] = {
+          ...cueSettingsRef.current[currentIndex + 1],
+          incomingStartSec: capturedIncomingSec,
+        };
+      }
 
       // Use BPM for beat-synced timing (fall back to 120 if unknown)
       const bpm = currentTrack?.audioFeatures?.tempo || 120;
@@ -681,13 +710,16 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       );
 
       // Determine where the transition starts:
-      // If a cue point is selected, start there; otherwise start so transition ends at track end
+      // Priority: selected cue → saved cue from audioFeatures → default (ends-at-track-end)
       const transitionSec = schedule.totalDurationMs / 1000;
       let seekTarget: number;
 
       if (selectedCuePoint) {
         seekTarget = selectedCuePoint.positionMs / 1000;
         console.log(`Starting transition at cue point: ${seekTarget.toFixed(1)}s (${selectedCuePoint.label})`);
+      } else if (currentTrack?.audioFeatures?.outgoingCueMs) {
+        seekTarget = currentTrack.audioFeatures.outgoingCueMs / 1000;
+        console.log(`Starting transition at saved cue: ${seekTarget.toFixed(1)}s`);
       } else {
         seekTarget = (duration / 1000) - transitionSec;
         console.log(`Starting transition ${transitionSec.toFixed(1)}s before end`);
@@ -704,8 +736,13 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
       nextPlayer.setVolume(0);
       await new Promise(resolve => setTimeout(resolve, 600));
 
-      // Seek incoming track past its intro if the DJ set a start offset
-      const inCueOffset = incomingStartSec > 0 ? incomingStartSec : schedule.incomingCueOffsetMs / 1000;
+      // Seek incoming track past its intro — priority: DJ-set → saved → schedule default
+      const savedIncomingSec = trackToPlay?.audioFeatures?.incomingStartSec ?? 0;
+      const inCueOffset = incomingStartSec > 0
+        ? incomingStartSec
+        : savedIncomingSec > 0
+          ? savedIncomingSec
+          : schedule.incomingCueOffsetMs / 1000;
       if (inCueOffset > 0) {
         console.log(`Incoming track starting at ${inCueOffset}s`);
         nextPlayer.seekTo(inCueOffset, true);
@@ -785,6 +822,63 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     }
   };
 
+  const handleSaveMix = async () => {
+    if (!user) return;
+    setIsSaving(true);
+    setSaveStatus("idle");
+    try {
+      const tracks: SavedTrack[] = queue.map((t, i) => ({
+        id: t.id,
+        name: t.name,
+        artist: t.artists?.[0]?.name ?? "",
+        albumArt: t.album?.images?.[0]?.url ?? "",
+        bpm: t.audioFeatures?.tempo ?? 0,
+        key: t.audioFeatures?.camelot ?? "",
+        energy: Math.round((t.audioFeatures?.energy ?? 0) * 100),
+        // Only include cue fields when they have a real value — Firestore rejects undefined.
+        // Priority: captured during transition → live UI state (in case DJ saved before transition fired) → loaded from previous save.
+        ...((() => {
+          const cueMs =
+            cueSettingsRef.current[i]?.outgoingCueMs ??
+            (i === currentIndex ? selectedCuePoint?.positionMs : undefined) ??
+            t.audioFeatures?.outgoingCueMs;
+          const startSec =
+            cueSettingsRef.current[i]?.incomingStartSec ??
+            (i === currentIndex + 1 && incomingStartSec > 0 ? incomingStartSec : undefined) ??
+            t.audioFeatures?.incomingStartSec;
+          return {
+            ...(cueMs != null ? { outgoingCueMs: cueMs } : {}),
+            ...(startSec != null ? { incomingStartSec: startSec } : {}),
+          };
+        })()),
+      }));
+      const transition = selectedTransition || transitionRecommendations[0];
+
+      // Race the Firestore write against a 8s timeout so it never hangs forever
+      await Promise.race([
+        saveMix(user.id, {
+          title: `${queue[0]?.name ?? "Mix"} + ${queue.length - 1} more`,
+          authorName: user.fullName ?? user.username ?? "Anonymous",
+          isPublic: false,
+          tracks,
+          transitionBeats: transitionLengthBeats,
+          transitionType: transition?.name ?? "Crossfade",
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Save timed out — check Firestore rules")), 8000)
+        ),
+      ]);
+
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    } catch (err) {
+      console.error("Save mix failed:", err);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    }
+    setIsSaving(false);
+  };
+
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-[#e8e8e8]">
       {/* Hidden YouTube Players for crossfading */}
@@ -799,7 +893,7 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
           <textarea
             value={vibePrompt}
             onChange={(e) => setVibePrompt(e.target.value)}
-            placeholder="e.g., 'k-pop', 'chill R&B', '90s hip hop'..."
+            placeholder="e.g., 'chill R&B', '90s hip hop'..."
             className="w-full h-16 bg-[#111] border border-[#222] p-2.5 text-sm rounded resize-none focus:outline-none focus:border-red-500/50 placeholder:text-[#444] text-[#ccc]"
           />
           <div className="flex gap-2 mt-2">
@@ -1002,6 +1096,21 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                 >
                   Stop
                 </button>
+                {user && (
+                  <button
+                    onClick={handleSaveMix}
+                    disabled={isSaving || queue.length === 0}
+                    className={`px-4 py-1.5 text-sm rounded transition-colors border disabled:opacity-50 disabled:cursor-not-allowed ${
+                      saveStatus === "saved"
+                        ? "bg-green-500/10 border-green-500/30 text-green-400"
+                        : saveStatus === "error"
+                        ? "bg-red-500/10 border-red-500/30 text-red-400"
+                        : "bg-[#1a1a1a] border-[#222] text-[#888] hover:bg-[#222] hover:text-white"
+                    }`}
+                  >
+                    {isSaving ? "Saving…" : saveStatus === "saved" ? "✓ Saved" : saveStatus === "error" ? "Error" : "Save Mix"}
+                  </button>
+                )}
                 {!playerReady && (
                   <span className="text-[10px] text-[#555]">Initializing...</span>
                 )}
@@ -1412,7 +1521,9 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                           </div>
 
                           <p className="text-[10px] text-[#555] mb-2 line-clamp-1">
-                            {track.transitionReason}
+                            {typeof track.transitionReason === "string"
+                              ? track.transitionReason
+                              : JSON.stringify(track.transitionReason)}
                           </p>
 
                           {track.audioFeatures && (
