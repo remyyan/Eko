@@ -137,12 +137,18 @@ function SpectatePlayer({ mix, onClose }: { mix: SavedMix; onClose: () => void }
         inPlayer.seekTo(incomingStartSec, true);
         await new Promise(r => setTimeout(r, 200));
       }
+      outPlayer.setVolume(100);
       inPlayer.playVideo();
-      const steps = CROSSFADE_SEC * 10;
+      // Equal-power crossfade (sin/cos curve) — matches the DJPlayer engine.
+      // Linear fade causes a perceived volume dip at the midpoint; equal-power keeps loudness constant.
+      const crossfadeSec = tracks[currentIdxRef.current]?.outgoingCueMs != null
+        ? CROSSFADE_SEC  // saved mixes used a specific cue, honour the same window
+        : CROSSFADE_SEC;
+      const steps = crossfadeSec * 10;
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
-        outPlayer.setVolume(Math.round((1 - t) * 100));
-        inPlayer.setVolume(Math.round(t * 100));
+        outPlayer.setVolume(Math.round(Math.cos(t * Math.PI / 2) * 100));
+        inPlayer.setVolume(Math.round(Math.sin(t * Math.PI / 2) * 100));
         setTransitionProgress(t);
         await new Promise(r => setTimeout(r, 100));
       }
