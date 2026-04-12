@@ -1,8 +1,10 @@
 "use client";
 
 import { useUser, SignInButton, UserButton } from "@clerk/nextjs";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import Link from "next/link";
 import DJPlayer from "@/components/DJPlayer";
+import { getUserMixes, deleteMix, setMixPublic, type SavedMix } from "@/lib/saveMix";
 
 interface Track {
   id: string;
@@ -37,17 +39,14 @@ function TopNav({ isSignedIn }: { isSignedIn: boolean }) {
           </div>
         </div>
 
-        {/* Nav links — future sections */}
+        {/* Nav links */}
         <nav className="hidden md:flex items-center gap-6 text-xs text-[#555]">
           <span className="text-white/80 cursor-default">Mix</span>
           <span className="flex items-center gap-1.5 cursor-default opacity-40">
             Blog
             <span className="text-[8px] bg-[#1a1a1a] border border-[#2a2a2a] text-[#444] px-1.5 py-0.5 rounded-full uppercase tracking-wider">Soon</span>
           </span>
-          <span className="flex items-center gap-1.5 cursor-default opacity-40">
-            Community
-            <span className="text-[8px] bg-[#1a1a1a] border border-[#2a2a2a] text-[#444] px-1.5 py-0.5 rounded-full uppercase tracking-wider">Soon</span>
-          </span>
+          <Link href="/community" className="hover:text-white transition-colors">Community</Link>
         </nav>
 
         {/* Auth */}
@@ -138,13 +137,121 @@ function LandingPage() {
   );
 }
 
+// ─── My Mixes slide-over panel ───────────────────────────────────────────────
+function MyMixesPanel({ userId, onClose, onLoad }: { userId: string; onClose: () => void; onLoad: (mix: SavedMix) => void }) {
+  const [mixes, setMixes] = useState<SavedMix[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getUserMixes(userId)
+      .then((m) => { setMixes(m); setLoading(false); })
+      .catch((err) => { console.error("Failed to load mixes:", err); setError("Could not load mixes."); setLoading(false); });
+  }, [userId]);
+
+  const handleDelete = async (id: string) => {
+    await deleteMix(id);
+    setMixes((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  const handleTogglePublic = async (mix: SavedMix) => {
+    await setMixPublic(mix.id, !mix.isPublic);
+    setMixes((prev) => prev.map((m) => m.id === mix.id ? { ...m, isPublic: !mix.isPublic } : m));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      {/* Panel */}
+      <div className="relative w-full max-w-sm bg-[#0d0d0d] border-l border-[#1a1a1a] flex flex-col h-full overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#1a1a1a]">
+          <span className="text-sm font-semibold text-white">My Mixes</span>
+          <button onClick={onClose} className="text-[#555] hover:text-white text-lg leading-none">✕</button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loading && (
+            <div className="flex items-center justify-center h-32">
+              <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+          {!loading && error && (
+            <div className="text-center text-red-400 text-xs py-16 px-6">{error}</div>
+          )}
+          {!loading && !error && mixes.length === 0 && (
+            <div className="text-center text-[#444] text-xs py-16 px-6">
+              No mixes saved yet. Hit <span className="text-white">Save Mix</span> inside the player!
+            </div>
+          )}
+          {!error && mixes.map((mix) => (
+            <div key={mix.id} className="px-5 py-4 border-b border-[#141414] hover:bg-[#111] transition-colors">
+              <div className="flex items-start justify-between gap-2 mb-1.5">
+                <p className="text-sm font-medium text-white truncate flex-1">{mix.title}</p>
+                <button onClick={() => handleDelete(mix.id)} className="text-[#333] hover:text-red-400 text-xs transition-colors flex-shrink-0">✕</button>
+              </div>
+              <p className="text-[10px] text-[#444] mb-2">
+                {mix.tracks.length} tracks · {mix.transitionType} · {mix.transitionBeats} beats · {mix.createdAt.toLocaleDateString()}
+              </p>
+              <div className="flex flex-wrap gap-1 mb-2">
+                {mix.tracks.slice(0, 4).map((t) => (
+                  <span key={t.id} className="text-[9px] bg-[#161616] border border-[#222] text-[#666] px-1.5 py-0.5 rounded truncate max-w-[120px]">{t.name}</span>
+                ))}
+                {mix.tracks.length > 4 && <span className="text-[9px] text-[#444]">+{mix.tracks.length - 4} more</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { onLoad(mix); onClose(); }}
+                  className="text-[9px] px-2 py-0.5 rounded border border-red-500/30 bg-red-500/5 text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  ▶ Load Mix
+                </button>
+                <button
+                  onClick={() => handleTogglePublic(mix)}
+                  className={`text-[9px] px-2 py-0.5 rounded border transition-colors ${mix.isPublic ? "text-green-400 border-green-500/30 bg-green-500/5" : "text-[#555] border-[#222] hover:text-white"}`}
+                >
+                  {mix.isPublic ? "Public" : "Make Public"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Signed-in app (search + player) ─────────────────────────────────────────
+function savedMixToTracks(mix: SavedMix): Track[] {
+  return mix.tracks.map((t) => ({
+    id: t.id,
+    name: t.name,
+    artists: [{ name: t.artist }],
+    album: { images: t.albumArt ? [{ url: t.albumArt }] : [] },
+    audioFeatures: {
+      tempo: t.bpm,
+      camelot: t.key,
+      energy: t.energy / 100,
+    },
+  }));
+}
+
 function DJApp() {
+  const { user } = useUser();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Track[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+  const [loadedQueue, setLoadedQueue] = useState<Track[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showMyMixes, setShowMyMixes] = useState(false);
+
+  const handleLoadMix = (mix: SavedMix) => {
+    const tracks = savedMixToTracks(mix);
+    if (tracks.length === 0) return;
+    setLoadedQueue(tracks);
+    setCurrentTrack(tracks[0]);
+    setIsPlaying(true);
+  };
 
   const searchTracks = async () => {
     if (!searchQuery.trim()) return;
@@ -182,15 +289,33 @@ function DJApp() {
   };
 
   if (isPlaying && currentTrack) {
-    return <DJPlayer initialTrack={currentTrack} onStop={() => setIsPlaying(false)} />;
+    return (
+      <DJPlayer
+        initialTrack={currentTrack}
+        initialQueue={loadedQueue ?? undefined}
+        onStop={() => { setIsPlaying(false); setLoadedQueue(null); }}
+      />
+    );
   }
 
   return (
     <div className="flex-1 flex flex-col items-center justify-start pt-16 px-6 pb-10">
+      {showMyMixes && user && <MyMixesPanel userId={user.id} onClose={() => setShowMyMixes(false)} onLoad={handleLoadMix} />}
       <div className="w-full max-w-2xl">
-        <div className="text-center mb-10">
-          <h2 className="text-2xl font-bold text-white mb-1">Start a Mix</h2>
-          <p className="text-xs text-[#555]">Search for a track to load into the deck</p>
+        <div className="flex items-center justify-between mb-10">
+          <div>
+            <h2 className="text-2xl font-bold text-white mb-1">Start a Mix</h2>
+            <p className="text-xs text-[#555]">Search for a track to load into the deck</p>
+          </div>
+          <button
+            onClick={() => setShowMyMixes(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#111] border border-[#222] text-[#888] text-xs hover:bg-[#161616] hover:text-white transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.467l2.31-.66a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.467l2.31-.66A2.25 2.25 0 009 15.553z" />
+            </svg>
+            My Mixes
+          </button>
         </div>
 
         {/* Search bar */}

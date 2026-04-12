@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { useUser } from "@clerk/nextjs";
 import {
   crossfadeSchedule,
   beatMatchSchedule,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/transitionEngine";
 import TransitionWaveform from "@/components/TransitionWaveform";
 import CuePointBar, { generateCuePoints, type CuePoint } from "@/components/CuePointBar";
+import { saveMix, type SavedTrack } from "@/lib/saveMix";
 
 interface Track {
   id: string;
@@ -29,6 +31,7 @@ interface RecommendedTrack extends Track {
 
 interface DJPlayerProps {
   initialTrack: Track;
+  initialQueue?: Track[];
   onStop: () => void;
 }
 
@@ -39,11 +42,14 @@ declare global {
   }
 }
 
-export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
+export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlayerProps) {
+  const { user } = useUser();
   const MIN_TRANSITION_BEATS = 4;
   const MAX_TRANSITION_BEATS = 64;
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
 
-  const [queue, setQueue] = useState<Track[]>([initialTrack]);
+  const [queue, setQueue] = useState<Track[]>(initialQueue ?? [initialTrack]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -785,6 +791,38 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
     }
   };
 
+  const handleSaveMix = async () => {
+    if (!user) return;
+    setIsSaving(true);
+    setSaveStatus("idle");
+    try {
+      const tracks: SavedTrack[] = queue.map((t) => ({
+        id: t.id,
+        name: t.name,
+        artist: t.artists?.[0]?.name ?? "",
+        albumArt: t.album?.images?.[0]?.url ?? "",
+        bpm: t.audioFeatures?.tempo ?? 0,
+        key: t.audioFeatures?.camelot ?? "",
+        energy: Math.round((t.audioFeatures?.energy ?? 0) * 100),
+      }));
+      const transition = selectedTransition || transitionRecommendations[0];
+      await saveMix(user.id, {
+        title: `${queue[0]?.name ?? "Mix"} + ${queue.length - 1} more`,
+        isPublic: false,
+        tracks,
+        transitionBeats: transitionLengthBeats,
+        transitionType: transition?.name ?? "Crossfade",
+      });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    } catch (err) {
+      console.error("Save mix failed:", err);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    }
+    setIsSaving(false);
+  };
+
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-[#e8e8e8]">
       {/* Hidden YouTube Players for crossfading */}
@@ -1002,6 +1040,21 @@ export default function DJPlayer({ initialTrack, onStop }: DJPlayerProps) {
                 >
                   Stop
                 </button>
+                {user && (
+                  <button
+                    onClick={handleSaveMix}
+                    disabled={isSaving || queue.length === 0}
+                    className={`px-4 py-1.5 text-sm rounded transition-colors border disabled:opacity-50 disabled:cursor-not-allowed ${
+                      saveStatus === "saved"
+                        ? "bg-green-500/10 border-green-500/30 text-green-400"
+                        : saveStatus === "error"
+                        ? "bg-red-500/10 border-red-500/30 text-red-400"
+                        : "bg-[#1a1a1a] border-[#222] text-[#888] hover:bg-[#222] hover:text-white"
+                    }`}
+                  >
+                    {isSaving ? "Saving…" : saveStatus === "saved" ? "✓ Saved" : saveStatus === "error" ? "Error" : "Save Mix"}
+                  </button>
+                )}
                 {!playerReady && (
                   <span className="text-[10px] text-[#555]">Initializing...</span>
                 )}
