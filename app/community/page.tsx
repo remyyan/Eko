@@ -107,7 +107,7 @@ export default function CommunityPage() {
       {/* Content */}
       <div className="mx-auto w-full max-w-6xl px-6 py-12">
         <div className="mb-10">
-          <h1 className="text-2xl font-bold text-white mb-1">Community Mixes</h1>
+          <h1 className="text-2xl font-bold text-white mb-1">Community Mixes BETA</h1>
           <p className="text-xs text-[#555]">Public mixes shared by the EKO community</p>
         </div>
 
