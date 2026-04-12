@@ -89,6 +89,8 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
   const [manualResults, setManualResults] = useState<Track[]>([]);
   const [manualLoading, setManualLoading] = useState(false);
   const lastTransitionPairRef = useRef<string>("");
+  // Stores per-track cue settings as transitions happen so they can be saved
+  const cueSettingsRef = useRef<Record<number, { outgoingCueMs?: number; incomingStartSec?: number }>>({});
   const playerAContainerRef = useRef<HTMLDivElement>(null);
   const playerBContainerRef = useRef<HTMLDivElement>(null);
   const positionIntervalRef = useRef<any>(null);
@@ -380,7 +382,10 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
     const defaultSchedule = buildTransitionSchedule(transition.name, currentBpm, beatsForTransition);
     const autoLeadMs = defaultSchedule.totalDurationMs + 2000;
     const fallbackTriggerMs = Math.max(0, duration - autoLeadMs);
-    const triggerMs = selectedCuePoint ? selectedCuePoint.positionMs : fallbackTriggerMs;
+    const savedCueMs = queue[currentIndex]?.audioFeatures?.outgoingCueMs;
+    const triggerMs = selectedCuePoint
+      ? selectedCuePoint.positionMs
+      : savedCueMs ?? fallbackTriggerMs;
     const shouldAutoTransition = position >= triggerMs;
 
     if (shouldAutoTransition) {
@@ -666,6 +671,10 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
     setSelectedTransition(null);
     console.log(`Executing ${transition.name} transition`);
 
+    // Capture cue settings for this transition index before any async operations
+    const capturedCueMs = selectedCuePoint?.positionMs;
+    const capturedIncomingSec = incomingStartSec > 0 ? incomingStartSec : undefined;
+
     try {
       let trackToPlay = nextTrack;
       if (currentIndex < queue.length - 1) {
@@ -675,6 +684,20 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
       const currentPlayer = activePlayer === 'A' ? playerA : playerB;
       const nextPlayer = activePlayer === 'A' ? playerB : playerA;
       const currentTrack = queue[currentIndex];
+
+      // Store cue settings so they can be saved later.
+      // outgoingCueMs belongs to the track we're leaving (currentIndex).
+      // incomingStartSec belongs to the track we're entering (currentIndex + 1).
+      cueSettingsRef.current[currentIndex] = {
+        ...cueSettingsRef.current[currentIndex],
+        outgoingCueMs: capturedCueMs,
+      };
+      if (capturedIncomingSec != null) {
+        cueSettingsRef.current[currentIndex + 1] = {
+          ...cueSettingsRef.current[currentIndex + 1],
+          incomingStartSec: capturedIncomingSec,
+        };
+      }
 
       // Use BPM for beat-synced timing (fall back to 120 if unknown)
       const bpm = currentTrack?.audioFeatures?.tempo || 120;
@@ -687,13 +710,16 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
       );
 
       // Determine where the transition starts:
-      // If a cue point is selected, start there; otherwise start so transition ends at track end
+      // Priority: selected cue → saved cue from audioFeatures → default (ends-at-track-end)
       const transitionSec = schedule.totalDurationMs / 1000;
       let seekTarget: number;
 
       if (selectedCuePoint) {
         seekTarget = selectedCuePoint.positionMs / 1000;
         console.log(`Starting transition at cue point: ${seekTarget.toFixed(1)}s (${selectedCuePoint.label})`);
+      } else if (currentTrack?.audioFeatures?.outgoingCueMs) {
+        seekTarget = currentTrack.audioFeatures.outgoingCueMs / 1000;
+        console.log(`Starting transition at saved cue: ${seekTarget.toFixed(1)}s`);
       } else {
         seekTarget = (duration / 1000) - transitionSec;
         console.log(`Starting transition ${transitionSec.toFixed(1)}s before end`);
@@ -710,8 +736,13 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
       nextPlayer.setVolume(0);
       await new Promise(resolve => setTimeout(resolve, 600));
 
-      // Seek incoming track past its intro if the DJ set a start offset
-      const inCueOffset = incomingStartSec > 0 ? incomingStartSec : schedule.incomingCueOffsetMs / 1000;
+      // Seek incoming track past its intro — priority: DJ-set → saved → schedule default
+      const savedIncomingSec = trackToPlay?.audioFeatures?.incomingStartSec ?? 0;
+      const inCueOffset = incomingStartSec > 0
+        ? incomingStartSec
+        : savedIncomingSec > 0
+          ? savedIncomingSec
+          : schedule.incomingCueOffsetMs / 1000;
       if (inCueOffset > 0) {
         console.log(`Incoming track starting at ${inCueOffset}s`);
         nextPlayer.seekTo(inCueOffset, true);
@@ -796,7 +827,7 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
     setIsSaving(true);
     setSaveStatus("idle");
     try {
-      const tracks: SavedTrack[] = queue.map((t) => ({
+      const tracks: SavedTrack[] = queue.map((t, i) => ({
         id: t.id,
         name: t.name,
         artist: t.artists?.[0]?.name ?? "",
@@ -804,15 +835,40 @@ export default function DJPlayer({ initialTrack, initialQueue, onStop }: DJPlaye
         bpm: t.audioFeatures?.tempo ?? 0,
         key: t.audioFeatures?.camelot ?? "",
         energy: Math.round((t.audioFeatures?.energy ?? 0) * 100),
+        // Only include cue fields when they have a real value — Firestore rejects undefined.
+        // Priority: captured during transition → live UI state (in case DJ saved before transition fired) → loaded from previous save.
+        ...((() => {
+          const cueMs =
+            cueSettingsRef.current[i]?.outgoingCueMs ??
+            (i === currentIndex ? selectedCuePoint?.positionMs : undefined) ??
+            t.audioFeatures?.outgoingCueMs;
+          const startSec =
+            cueSettingsRef.current[i]?.incomingStartSec ??
+            (i === currentIndex + 1 && incomingStartSec > 0 ? incomingStartSec : undefined) ??
+            t.audioFeatures?.incomingStartSec;
+          return {
+            ...(cueMs != null ? { outgoingCueMs: cueMs } : {}),
+            ...(startSec != null ? { incomingStartSec: startSec } : {}),
+          };
+        })()),
       }));
       const transition = selectedTransition || transitionRecommendations[0];
-      await saveMix(user.id, {
-        title: `${queue[0]?.name ?? "Mix"} + ${queue.length - 1} more`,
-        isPublic: false,
-        tracks,
-        transitionBeats: transitionLengthBeats,
-        transitionType: transition?.name ?? "Crossfade",
-      });
+
+      // Race the Firestore write against a 8s timeout so it never hangs forever
+      await Promise.race([
+        saveMix(user.id, {
+          title: `${queue[0]?.name ?? "Mix"} + ${queue.length - 1} more`,
+          authorName: user.fullName ?? user.username ?? "Anonymous",
+          isPublic: false,
+          tracks,
+          transitionBeats: transitionLengthBeats,
+          transitionType: transition?.name ?? "Crossfade",
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Save timed out — check Firestore rules")), 8000)
+        ),
+      ]);
+
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 3000);
     } catch (err) {

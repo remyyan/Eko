@@ -36,11 +36,16 @@ export interface SavedTrack {
   bpm: number;
   key: string;       // e.g. "8B"
   energy: number;    // 0-100
+  /** Where the outgoing crossfade fires on this track (ms from start) */
+  outgoingCueMs?: number;
+  /** Where the incoming track should seek to when it's cued in (seconds) */
+  incomingStartSec?: number;
 }
 
 export interface SavedMix {
   id: string;        // Firestore doc id
   userId: string;
+  authorName: string;
   title: string;
   createdAt: Date;
   isPublic: boolean;
@@ -79,6 +84,7 @@ export async function getUserMixes(userId: string): Promise<SavedMix[]> {
     return {
       id: d.id,
       userId: data.userId,
+      authorName: data.authorName ?? "",
       title: data.title,
       createdAt: (data.createdAt as Timestamp)?.toDate?.() ?? new Date(),
       isPublic: data.isPublic ?? false,
@@ -104,6 +110,7 @@ export async function getPublicMixes(): Promise<SavedMix[]> {
     return {
       id: d.id,
       userId: data.userId,
+      authorName: data.authorName ?? "",
       title: data.title,
       createdAt: (data.createdAt as Timestamp)?.toDate?.() ?? new Date(),
       isPublic: true,

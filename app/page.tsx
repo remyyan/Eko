@@ -231,6 +231,8 @@ function savedMixToTracks(mix: SavedMix): Track[] {
       tempo: t.bpm,
       camelot: t.key,
       energy: t.energy / 100,
+      outgoingCueMs: t.outgoingCueMs,
+      incomingStartSec: t.incomingStartSec,
     },
   }));
 }
